@@ -53,11 +53,13 @@ if (app.Environment.IsDevelopment())
     await HomeSeedData.SeedAsync(homeDb, app.Environment);
 }
 
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapGet("/", () => "Home Excursion foundation is running.");
-
 app.MapAuthEndpoints();
+app.MapHomeEndpoints();
 
 app.Run();

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Home Excursion</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <div>
+        <div class="eyebrow">LA ÚLTIMA EXCURSIÓN</div>
+        <h1>Home Excursion</h1>
+        <p class="tagline">Prepare. Improve. Sell.</p>
+      </div>
+      <div class="goal">
+        <span class="goal-label">THE GOAL</span>
+        <strong>Ready to List <span>→</span> Sold <span>→</span> Alaska</strong>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="property-strip">
+      <div>
+        <span class="section-kicker">ACTIVE PROPERTY</span>
+        <h2 id="propertyName">Loading…</h2>
+        <p id="propertyLocation"></p>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-copy">
+          <span>Ready-to-list progress</span>
+          <strong id="progressPercent">—</strong>
+        </div>
+        <div class="progress-track" aria-label="Ready-to-list progress">
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="summary-grid" aria-label="Project summary">
+      <article class="summary-card">
+        <span class="summary-label">Spent</span>
+        <strong id="spent">$—</strong>
+        <span class="summary-note">posted expenses</span>
+      </article>
+      <article class="summary-card">
+        <span class="summary-label">Committed</span>
+        <strong id="committed">$—</strong>
+        <span class="summary-note">approved work</span>
+      </article>
+      <article class="summary-card">
+        <span class="summary-label">Remaining</span>
+        <strong id="remaining">$—</strong>
+        <span class="summary-note">current estimate</span>
+      </article>
+      <article class="summary-card accent-card">
+        <span class="summary-label">Progress</span>
+        <strong id="progressCount">—</strong>
+        <span class="summary-note">projects + punch list</span>
+      </article>
+    </section>
+
+    <section class="content-grid">
+      <article class="panel projects-panel">
+        <div class="panel-heading">
+          <div>
+            <span class="section-kicker">BIG WORK</span>
+            <h2>Projects</h2>
+          </div>
+        </div>
+        <div id="projects" class="projects-list">
+          <div class="loading">Loading projects…</div>
+        </div>
+      </article>
+
+      <article class="panel tasks-panel">
+        <div class="panel-heading tasks-heading">
+          <div>
+            <span class="section-kicker">THE PUNCH LIST</span>
+            <h2>What needs doing</h2>
+          </div>
+          <div class="filter-group" role="group" aria-label="Task filters">
+            <button class="filter-btn active" data-filter="open">Open</button>
+            <button class="filter-btn" data-filter="diy">DIY</button>
+            <button class="filter-btn" data-filter="contractor">Contractor</button>
+            <button class="filter-btn" data-filter="all">All</button>
+          </div>
+        </div>
+
+        <div class="task-stats">
+          <span id="taskStats">—</span>
+          <span class="task-tip">Check it off. Watch the list shrink.</span>
+        </div>
+
+        <div id="tasks" class="task-list">
+          <div class="loading">Loading punch list…</div>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
