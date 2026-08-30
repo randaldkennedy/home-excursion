@@ -46,6 +46,13 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
+if (app.Environment.IsDevelopment())
+{
+    using var scope = app.Services.CreateScope();
+    var homeDb = scope.ServiceProvider.GetRequiredService<HomeExcursionDbContext>();
+    await HomeSeedData.SeedAsync(homeDb, app.Environment);
+}
+
 app.UseAuthentication();
 app.UseAuthorization();
 
