@@ -11,16 +11,31 @@ var connectionString =
     ?? throw new InvalidOperationException(
         "Connection string 'HomeExcursion' was not found.");
 
+builder.Services.AddDbContext<HomeExcursionDbContext>(options =>
+    options.UseSqlServer(
+        connectionString,
+        sqlOptions =>
+        {
+            sqlOptions.MigrationsHistoryTable("__EFMigrationsHistory", "home");
+            sqlOptions.EnableRetryOnFailure();
+        }));
+
 builder.Services.AddDbContext<LaUltimaExcursionDbContext>(options =>
-    options.UseSqlServer(connectionString));
+    options.UseSqlServer(
+        connectionString,
+        sqlOptions =>
+        {
+            sqlOptions.MigrationsHistoryTable("__EFMigrationsHistory", "platform");
+            sqlOptions.EnableRetryOnFailure();
+        }));
 
 if (builder.Environment.IsDevelopment())
 {
     builder.Services
-        .AddAuthentication("Development")
+        .AddAuthentication(DevelopmentAuthenticationHandler.SchemeName)
         .AddScheme<AuthenticationSchemeOptions, DevelopmentAuthenticationHandler>(
-            "Development",
-            options => { });
+            DevelopmentAuthenticationHandler.SchemeName,
+            _ => { });
 }
 else
 {
