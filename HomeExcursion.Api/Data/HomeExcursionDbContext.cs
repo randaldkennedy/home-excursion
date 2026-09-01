@@ -18,6 +18,8 @@ public class HomeExcursionDbContext : DbContext
     public DbSet<Vendor> Vendors => Set<Vendor>();
     public DbSet<Area> Areas => Set<Area>();
     public DbSet<TaskArea> TaskAreas => Set<TaskArea>();
+    public DbSet<Purchase> Purchases => Set<Purchase>();
+    public DbSet<PurchaseAllocation> PurchaseAllocations => Set<PurchaseAllocation>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -188,6 +190,97 @@ public class HomeExcursionDbContext : DbContext
 
             entity.HasIndex(v => v.Name);
         });
+
+        modelBuilder.Entity<Purchase>(entity =>
+        {
+            entity.ToTable("Purchases");
+
+            entity.Property(p => p.Vendor)
+                .HasMaxLength(200);
+
+            entity.Property(p => p.Subtotal)
+                .HasPrecision(12, 2);
+
+            entity.Property(p => p.Tax)
+                .HasPrecision(12, 2);
+
+            entity.Property(p => p.Total)
+                .HasPrecision(12, 2);
+
+            entity.Property(p => p.Status)
+                .HasMaxLength(40)
+                .IsRequired();
+
+            entity.Property(p => p.Source)
+                .HasMaxLength(40)
+                .IsRequired();
+
+            entity.HasOne(p => p.Property)
+                .WithMany()
+                .HasForeignKey(p => p.PropertyId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(p => p.VendorRecord)
+                .WithMany()
+                .HasForeignKey(p => p.VendorId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasIndex(p => new { p.PropertyId, p.PurchaseDate });
+            entity.HasIndex(p => new { p.PropertyId, p.Status });
+            entity.HasIndex(p => p.VendorId);
+            entity.HasIndex(p => p.LegacyExpenseId)
+                .IsUnique()
+                .HasFilter("[LegacyExpenseId] IS NOT NULL");
+        });
+
+        modelBuilder.Entity<PurchaseAllocation>(entity =>
+        {
+            entity.ToTable("PurchaseAllocations");
+
+            entity.Property(a => a.Amount)
+                .HasPrecision(12, 2);
+
+            entity.Property(a => a.Description)
+                .HasMaxLength(300)
+                .IsRequired();
+
+            entity.Property(a => a.Category)
+                .HasMaxLength(60);
+
+            entity.Property(a => a.AllocationType)
+                .HasMaxLength(40)
+                .IsRequired();
+
+            entity.Property(a => a.SuggestedBy)
+                .HasMaxLength(40)
+                .IsRequired();
+
+            entity.Property(a => a.Confidence)
+                .HasPrecision(5, 4);
+
+            entity.HasOne(a => a.Purchase)
+                .WithMany(p => p.Allocations)
+                .HasForeignKey(a => a.PurchaseId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(a => a.Project)
+                .WithMany()
+                .HasForeignKey(a => a.ProjectId)
+                .OnDelete(DeleteBehavior.NoAction);
+
+            entity.HasOne(a => a.Task)
+                .WithMany()
+                .HasForeignKey(a => a.TaskId)
+                .OnDelete(DeleteBehavior.NoAction);
+
+            entity.HasIndex(a => a.PurchaseId);
+            entity.HasIndex(a => a.ProjectId);
+            entity.HasIndex(a => a.TaskId);
+            entity.HasIndex(a => a.LegacyExpenseId)
+                .IsUnique()
+                .HasFilter("[LegacyExpenseId] IS NOT NULL");
+        });
+
 
         modelBuilder.Entity<Expense>(entity =>
         {
