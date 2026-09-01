@@ -74,9 +74,9 @@ function renderTaskRow(task) {
   const statusPill = inProgress ? `<span class="task-pill in-progress">In Progress</span>` : (cancelled ? `<span class="task-pill cancelled">Cancelled</span>` : "");
   const estimate = task.estimatedCost != null ? `<span class="task-pill">${money.format(task.estimatedCost)} est.</span>` : "";
 
-  const taskSpent = state.expenses
-    .filter(expense => Number(expense.taskId) === Number(task.id))
-    .reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+  const taskSpent = state.purchaseAllocations
+    .filter(allocation => allocation.isIncludedInHomeSpend && Number(allocation.taskId) === Number(task.id))
+    .reduce((sum, allocation) => sum + Number(allocation.amount || 0), 0);
 
   const spentLine = `<span class="task-spent ${taskSpent > 0 ? "has-spend" : "no-spend"}">${taskSpent > 0 ? moneyExact.format(taskSpent) : "—"}</span>`;
 
@@ -244,8 +244,8 @@ function bindTaskEditor() {
   document.querySelector("#addTaskAreaButton")?.addEventListener("click", addTaskAreaFromInput);
   document.querySelector("#taskAreaInput")?.addEventListener("keydown", handleTaskAreaKeydown);
   document.querySelector("#taskAreaTags")?.addEventListener("click", handleTaskAreaRemove);
-  document.querySelector("#addTaskExpenseButton")?.addEventListener("click", addExpenseForCurrentTask);
-  document.querySelector("#taskExpensesList")?.addEventListener("click", handleTaskExpenseClick);
+  document.querySelector("#addTaskExpenseButton")?.addEventListener("click", addPurchaseForCurrentTask);
+  document.querySelector("#taskExpensesList")?.addEventListener("click", handleTaskPurchaseClick);
   document.querySelector("#taskDialog").addEventListener("click", event => {
     if (event.target === event.currentTarget) closeTaskDialog();
   });
@@ -346,68 +346,60 @@ function renderTaskAreaTags() {
 }
 
 function renderTaskExpenses(task) {
-  const section = document.querySelector("#taskExpensesSection");
   const list = document.querySelector("#taskExpensesList");
   const totalElement = document.querySelector("#taskExpenseTotal");
   const addButton = document.querySelector("#addTaskExpenseButton");
-  if (!section || !list || !totalElement || !addButton) return;
+  if (!list || !totalElement || !addButton) return;
 
   const taskId = Number(task?.id || document.querySelector("#taskId")?.value || 0);
   addButton.disabled = !taskId;
 
   if (!taskId) {
     totalElement.textContent = moneyExact.format(0);
-    list.innerHTML = `<div class="empty compact">Save the task first, then expenses can be attached to it.</div>`;
+    list.innerHTML = `<div class="empty compact">Save the task first, then purchases can be allocated to it.</div>`;
     return;
   }
 
-  const expenses = state.expenses
-    .filter(expense => Number(expense.taskId) === taskId)
-    .sort((a, b) => compareExpenseDates(a, b, false) || b.id - a.id);
+  const allocations = state.purchaseAllocations
+    .filter(a => a.isIncludedInHomeSpend && Number(a.taskId) === taskId)
+    .sort((a, b) => comparePurchaseDates(a.purchase, b.purchase) || b.purchaseId - a.purchaseId);
 
-  const total = expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+  const total = allocations.reduce((sum, a) => sum + Number(a.amount || 0), 0);
   totalElement.textContent = moneyExact.format(total);
 
-  if (!expenses.length) {
-    list.innerHTML = `<div class="empty compact">No expenses attached to this task yet.</div>`;
+  if (!allocations.length) {
+    list.innerHTML = `<div class="empty compact">No purchase allocations attached to this task yet.</div>`;
     return;
   }
 
-  list.innerHTML = expenses.map(expense => {
-    const vendor = expense.vendorName || expense.vendor || "Vendor not recorded";
-    const date = expense.expenseDate ? formatDateOnly(expense.expenseDate) : "Date unknown";
-    const receiptCount = Array.isArray(expense.attachments) ? expense.attachments.length : 0;
-    const receipt = receiptCount ? ` · 📎 ${receiptCount}` : "";
-
-    return `<button type="button" class="task-expense-row" data-task-expense-id="${expense.id}">
+  list.innerHTML = allocations.map(a => {
+    const p = a.purchase;
+    const vendor = p.vendorName || p.vendor || "Vendor not recorded";
+    const date = p.purchaseDate ? formatDateOnly(p.purchaseDate) : "Date unknown";
+    const receipt = (p.attachments || []).length ? ` · 📎 ${(p.attachments || []).length}` : "";
+    return `<button type="button" class="task-expense-row" data-task-purchase-id="${p.id}">
       <span class="task-expense-copy">
-        <strong>${escapeHtml(expense.description)}</strong>
+        <strong>${escapeHtml(a.description)}</strong>
         <small>${escapeHtml(vendor)} · ${escapeHtml(date)}${receipt}</small>
       </span>
-      <span class="task-expense-amount">${moneyExact.format(Number(expense.amount) || 0)}</span>
+      <span class="task-expense-amount">${moneyExact.format(Number(a.amount) || 0)}</span>
     </button>`;
   }).join("");
 }
 
-function addExpenseForCurrentTask() {
+function addPurchaseForCurrentTask() {
   const taskId = Number(document.querySelector("#taskId")?.value || 0);
   if (!taskId) return;
-
   const task = state.data?.tasks?.find(item => item.id === taskId);
   if (!task) return;
-
-  openExpenseDialog(null, {
-    taskId: task.id,
-    projectId: task.projectId ?? null
-  });
+  openPurchaseDialog(null, { taskId: task.id, projectId: task.projectId ?? null });
 }
 
-function handleTaskExpenseClick(event) {
-  const row = event.target.closest("[data-task-expense-id]");
+function handleTaskPurchaseClick(event) {
+  const row = event.target.closest("[data-task-purchase-id]");
   if (!row) return;
-
-  const expense = state.expenses.find(item => item.id === Number(row.dataset.taskExpenseId));
-  if (expense) openExpenseDialog(expense);
+  const purchase = state.purchases.find(item => item.id === Number(row.dataset.taskPurchaseId));
+  if (purchase) openPurchaseDialog(purchase);
 }
 
 function closeTaskDialog() {

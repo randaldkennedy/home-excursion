@@ -19,6 +19,9 @@ public static class HomeEndpoints
         group.MapPost("/projects/{id:int}/attachments", UploadProjectAttachmentAsync)
             .DisableAntiforgery();
 
+        group.MapPurchaseEndpoints();
+
+        // Legacy Expense endpoints remain during the Purchase transition.
         group.MapGet("/expenses", GetExpensesAsync);
         group.MapPost("/expenses", CreateExpenseAsync);
         group.MapPut("/expenses/{id:int}", UpdateExpenseAsync);
@@ -70,11 +73,14 @@ public static class HomeEndpoints
             })
             .ToListAsync(cancellationToken);
 
-        var directProjectSpend = await db.Expenses
+        var directProjectSpend = await db.PurchaseAllocations
             .AsNoTracking()
-            .Where(e => e.PropertyId == property.Id && e.ProjectId != null)
-            .GroupBy(e => e.ProjectId!.Value)
-            .Select(g => new { ProjectId = g.Key, Amount = g.Sum(e => e.Amount) })
+            .Where(a =>
+                a.Purchase.PropertyId == property.Id &&
+                a.IsIncludedInHomeSpend &&
+                a.ProjectId != null)
+            .GroupBy(a => a.ProjectId!.Value)
+            .Select(g => new { ProjectId = g.Key, Amount = g.Sum(a => a.Amount) })
             .ToDictionaryAsync(x => x.ProjectId, x => x.Amount, cancellationToken);
 
         decimal RollupProjectSpend(int projectId)
@@ -142,28 +148,27 @@ public static class HomeEndpoints
             })
             .ToList();
 
-        var spent = await db.Expenses
-            .Where(e => e.PropertyId == property.Id)
-            .SumAsync(e => (decimal?)e.Amount, cancellationToken) ?? 0m;
+        var spent = await db.PurchaseAllocations
+            .Where(a => a.Purchase.PropertyId == property.Id && a.IsIncludedInHomeSpend)
+            .SumAsync(a => (decimal?)a.Amount, cancellationToken) ?? 0m;
 
-        var maintenanceExpenses = await db.Expenses
+        var maintenanceExpenses = await db.PurchaseAllocations
             .AsNoTracking()
-            .Where(e =>
-                e.PropertyId == property.Id &&
-                e.Category != null &&
-                (e.Category == "Maintenance" ||
-                 e.Category == "HVAC / Maintenance" ||
-                 e.Category.Contains("Maintenance")))
-            .OrderByDescending(e => e.ExpenseDate)
-            .ThenByDescending(e => e.Id)
-            .Select(e => new
+            .Where(a =>
+                a.Purchase.PropertyId == property.Id &&
+                a.IsIncludedInHomeSpend &&
+                (a.AllocationType == "Maintenance" ||
+                 (a.Category != null && a.Category.Contains("Maintenance"))))
+            .OrderByDescending(a => a.Purchase.PurchaseDate)
+            .ThenByDescending(a => a.Id)
+            .Select(a => new
             {
-                e.Id,
-                e.Description,
-                e.Amount,
-                e.ExpenseDate,
-                VendorName = e.VendorRecord != null ? e.VendorRecord.Name : e.Vendor,
-                e.Notes
+                a.Id,
+                a.Description,
+                a.Amount,
+                ExpenseDate = a.Purchase.PurchaseDate,
+                VendorName = a.Purchase.VendorRecord != null ? a.Purchase.VendorRecord.Name : a.Purchase.Vendor,
+                a.Notes
             })
             .ToListAsync(cancellationToken);
 
@@ -287,27 +292,31 @@ public static class HomeEndpoints
             })
             .ToListAsync(cancellationToken);
 
-        var expenses = await db.Expenses
+        var expenses = await db.PurchaseAllocations
             .AsNoTracking()
-            .Where(e => e.ProjectId != null && scopeIds.Contains(e.ProjectId.Value))
-            .OrderByDescending(e => e.ExpenseDate)
-            .ThenByDescending(e => e.Id)
-            .Select(e => new
+            .Where(a =>
+                a.IsIncludedInHomeSpend &&
+                a.ProjectId != null &&
+                scopeIds.Contains(a.ProjectId.Value))
+            .OrderByDescending(a => a.Purchase.PurchaseDate)
+            .ThenByDescending(a => a.Id)
+            .Select(a => new
             {
-                e.Id,
-                e.ProjectId,
-                ProjectName = e.Project != null ? e.Project.Name : null,
-                e.Description,
-                e.Vendor,
-                VendorName = e.VendorRecord != null ? e.VendorRecord.Name : null,
-                e.Amount,
-                e.ExpenseDate,
-                e.Category,
-                e.Notes
+                Id = a.Id,
+                PurchaseId = a.PurchaseId,
+                a.ProjectId,
+                ProjectName = a.Project != null ? a.Project.Name : null,
+                a.Description,
+                Vendor = a.Purchase.Vendor,
+                VendorName = a.Purchase.VendorRecord != null ? a.Purchase.VendorRecord.Name : a.Purchase.Vendor,
+                a.Amount,
+                ExpenseDate = a.Purchase.PurchaseDate,
+                a.Category,
+                a.Notes
             })
             .ToListAsync(cancellationToken);
 
-        var expenseEntityIds = expenses.Select(e => e.Id.ToString()).ToHashSet();
+        var purchaseEntityIds = expenses.Select(e => e.PurchaseId.ToString()).ToHashSet();
         var projectEntityIds = scopeIds.Select(x => x.ToString()).ToHashSet();
 
         var attachments = await platformDb.Attachments
@@ -318,7 +327,7 @@ public static class HomeEndpoints
                 a.App == "home" &&
                 (
                     (a.EntityType == "HomeProject" && a.EntityId != null && projectEntityIds.Contains(a.EntityId)) ||
-                    (a.EntityType == "Expense" && a.EntityId != null && expenseEntityIds.Contains(a.EntityId))
+                    (a.EntityType == "Purchase" && a.EntityId != null && purchaseEntityIds.Contains(a.EntityId))
                 ))
             .OrderByDescending(a => a.UploadedUtc)
             .Select(a => new
@@ -1062,11 +1071,14 @@ public static class HomeEndpoints
 
         if (task is null) return Results.NotFound();
 
-        if (task.Expenses.Count > 0)
+        var hasPurchaseAllocations = await db.PurchaseAllocations
+            .AnyAsync(a => a.TaskId == id, cancellationToken);
+
+        if (task.Expenses.Count > 0 || hasPurchaseAllocations)
         {
             return Results.Conflict(new
             {
-                message = "This task has expenses attached to it. Remove or reassign those expenses before deleting the task."
+                message = "This task has purchase allocations attached to it. Remove or reassign them before deleting the task."
             });
         }
 

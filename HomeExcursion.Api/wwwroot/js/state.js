@@ -1,9 +1,10 @@
 const state = {
   data: null,
-  expenses: [],
-  expenseFilter: "",
-  expenseProject: "",
-  expenseSort: "newest",
+  purchases: [],
+  purchaseAllocations: [],
+  purchaseFilter: "",
+  purchaseStatus: "",
+  purchaseSort: "newest",
   filter: "open",
   area: "",
   sort: "smart"

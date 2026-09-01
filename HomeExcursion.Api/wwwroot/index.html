@@ -107,36 +107,22 @@
       </article>
     </section>
 
-    <section class="panel expenses-panel">
+    <section class="panel purchases-panel">
       <div class="panel-heading expenses-heading">
-        <div>
-          <span class="section-kicker">MONEY OUT</span>
-          <h2>Expenses</h2>
-        </div>
-        <button id="addExpenseButton" class="primary-btn">+ Add expense</button>
+        <div><span class="section-kicker">MONEY OUT</span><h2>Receipts / Purchases</h2></div>
+        <button id="addPurchaseButton" class="primary-btn">+ Add purchase</button>
       </div>
-
       <div class="expense-toolbar">
-        <input id="expenseSearch" class="expense-search" type="search" placeholder="Search vendor, description, category…">
-        <select id="expenseProjectFilter" class="sort-select" aria-label="Filter expenses by project">
-          <option value="">All projects</option>
+        <input id="purchaseSearch" class="expense-search" type="search" placeholder="Search vendor, allocation, task, project…">
+        <select id="purchaseStatusFilter" class="sort-select" aria-label="Filter purchases">
+          <option value="">All receipts</option><option value="Needs Review">Needs review</option><option value="Unreviewed">Unreviewed</option><option value="Unassigned">Unassigned</option><option value="Verified">Verified</option>
         </select>
-        <select id="expenseSort" class="sort-select" aria-label="Sort expenses">
-          <option value="newest" selected>Newest first</option>
-          <option value="oldest">Oldest first</option>
-          <option value="highest">Highest amount</option>
-          <option value="lowest">Lowest amount</option>
+        <select id="purchaseSort" class="sort-select" aria-label="Sort purchases">
+          <option value="newest" selected>Newest first</option><option value="oldest">Oldest first</option><option value="highest">Highest amount</option><option value="lowest">Lowest amount</option>
         </select>
       </div>
-
-      <div class="expense-summary-line">
-        <span id="expenseStats">Loading expenses…</span>
-        <span>Click an expense to edit it or attach a receipt.</span>
-      </div>
-
-      <div id="expenses" class="expenses-list">
-        <div class="loading">Loading expenses…</div>
-      </div>
+      <div class="expense-summary-line"><span id="purchaseStats">Loading purchases…</span><span>Click a receipt to reconcile it.</span></div>
+      <div id="purchases" class="purchases-list"><div class="loading">Loading purchases…</div></div>
     </section>
   </main>
 
@@ -181,89 +167,37 @@
     </div>
   </dialog>
 
-  <dialog id="expenseDialog" class="modal expense-modal">
-    <form id="expenseForm" class="modal-card">
-      <div class="modal-head">
-        <div>
-          <span class="section-kicker">EXPENSE</span>
-          <h2 id="expenseDialogTitle">Add expense</h2>
+  <dialog id="purchaseDialog" class="modal purchase-modal">
+    <form id="purchaseForm" class="modal-card purchase-modal-card">
+      <div class="modal-head"><div><span class="section-kicker">PURCHASE</span><h2 id="purchaseDialogTitle">Add purchase</h2></div><div class="purchase-head-actions"><span id="purchaseStatusBadge" class="purchase-status review">New</span><button type="button" class="icon-btn" id="closePurchaseDialog" aria-label="Close">×</button></div></div>
+      <input type="hidden" id="purchaseId">
+      <div class="purchase-reconcile-layout">
+        <div class="purchase-form-side">
+          <div class="form-grid">
+            <label class="field"><span>Date</span><input id="purchaseDate" type="date"></label>
+            <label class="field"><span>Receipt total</span><input id="purchaseTotal" type="number" min="0" step="0.01" required placeholder="0.00"></label>
+            <label class="field field-wide"><span>Vendor</span><input id="purchaseVendor" maxlength="200" placeholder="e.g. Home Depot"></label>
+            <label class="field"><span>Subtotal</span><input id="purchaseSubtotal" type="number" min="0" step="0.01" placeholder="Optional"></label>
+            <label class="field"><span>Tax / fees</span><input id="purchaseTax" type="number" min="0" step="0.01" placeholder="Optional"></label>
+            <label class="field field-wide"><span>Notes</span><textarea id="purchaseNotes" rows="2" placeholder="Anything worth remembering…"></textarea></label>
+            <div class="field field-wide expense-receipt-field"><span>Receipt / document</span><label class="receipt-picker"><input id="purchaseReceiptFiles" type="file" accept="image/*,application/pdf" multiple hidden><span class="secondary-btn">Choose file(s)</span><small id="purchaseReceiptSelection"></small></label><div id="purchaseExistingReceipts" class="expense-existing-receipts"></div></div>
+          </div>
         </div>
-        <button type="button" class="icon-btn" id="closeExpenseDialog" aria-label="Close">×</button>
-      </div>
-
-      <input type="hidden" id="expenseId">
-
-      <div class="form-grid">
-        <label class="field">
-          <span>Date</span>
-          <input id="expenseDate" type="date">
-        </label>
-
-        <label class="field">
-          <span>Amount</span>
-          <input id="expenseAmount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" required>
-        </label>
-
-        <label class="field field-wide">
-          <span>Vendor</span>
-          <input id="expenseVendor" maxlength="200" placeholder="e.g. Ace Hardware">
-        </label>
-
-        <label class="field field-wide">
-          <span>Description</span>
-          <input id="expenseDescription" maxlength="300" required placeholder="What did you buy or pay for?">
-        </label>
-
-        <label class="field">
-          <span>Category</span>
-          <input id="expenseCategory" maxlength="100" list="expenseCategorySuggestions" placeholder="Materials">
-          <datalist id="expenseCategorySuggestions">
-            <option value="Materials"></option>
-            <option value="Fixture"></option>
-            <option value="Contractor"></option>
-            <option value="Maintenance"></option>
-            <option value="HVAC / Maintenance"></option>
-            <option value="Lighting"></option>
-            <option value="Paint"></option>
-            <option value="Landscaping"></option>
-          </datalist>
-        </label>
-
-        <label class="field">
-          <span>Project</span>
-          <select id="expenseProject"></select>
-        </label>
-
-        <label class="field field-wide">
-          <span>Task</span>
-          <select id="expenseTask"></select>
-        </label>
-
-        <label class="field field-wide">
-          <span>Notes</span>
-          <textarea id="expenseNotes" rows="3" placeholder="Anything worth remembering…"></textarea>
-        </label>
-
-        <div class="field field-wide expense-receipt-field">
-          <span>Receipt / document</span>
-          <label class="receipt-picker">
-            <input id="expenseReceiptFiles" type="file" accept="image/*,application/pdf" multiple hidden>
-            <span class="secondary-btn">Choose file(s)</span>
-            <small id="expenseReceiptSelection">Photos or PDFs, up to 20 MB each.</small>
-          </label>
-          <div id="expenseExistingReceipts" class="expense-existing-receipts"></div>
+        <div class="purchase-allocation-side">
+          <div class="allocation-heading"><div><span class="section-kicker">WHERE IT WENT</span><h3>Allocations</h3></div><button type="button" id="addAllocationButton" class="secondary-btn">+ Add allocation</button></div>
+          <div id="purchaseAllocations" class="purchase-allocations"></div>
+          <div class="reconciliation-card">
+            <div><span>Receipt total</span><strong id="reconcileReceiptTotal">$0.00</strong></div>
+            <div><span>Allocated</span><strong id="reconcileAllocated">$0.00</strong></div>
+            <div><span>Home spend</span><strong id="reconcileHomeSpend">$0.00</strong></div>
+            <div><span>Personal / excluded</span><strong id="reconcileExcluded">$0.00</strong></div>
+            <div class="reconcile-difference"><span>Difference</span><strong id="reconcileDifference">$0.00</strong></div>
+          </div>
         </div>
       </div>
-
-      <div id="expenseFormError" class="form-error" hidden></div>
-
-      <div class="modal-actions">
-        <button type="button" id="deleteExpenseButton" class="danger-btn" hidden>Delete expense</button>
-        <div class="modal-actions-right">
-          <button type="button" id="cancelExpenseButton" class="secondary-btn">Cancel</button>
-          <button type="submit" class="primary-btn">Save expense</button>
-        </div>
-      </div>
+      <div id="purchaseDuplicateWarning" class="duplicate-warning" hidden><strong>Possible duplicate</strong><p>Home found a purchase with the same amount/vendor/date pattern.</p><div id="purchaseDuplicateList"></div><button type="button" id="saveDuplicateAnywayButton" class="secondary-btn">Save anyway</button></div>
+      <div id="purchaseFormError" class="form-error" hidden></div>
+      <div class="modal-actions"><button type="button" id="deletePurchaseButton" class="danger-btn" hidden>Delete purchase</button><div class="modal-actions-right"><button type="button" id="cancelPurchaseButton" class="secondary-btn">Cancel</button><button type="button" id="verifyPurchaseButton" class="secondary-btn" hidden>Verify receipt</button><button type="submit" class="primary-btn">Save purchase</button></div></div>
     </form>
   </dialog>
 
@@ -336,7 +270,7 @@
   <script src="/js/state.js"></script>
   <script src="/js/ui.js"></script>
   <script src="/js/projects.js"></script>
-  <script src="/js/expenses.js"></script>
+  <script src="/js/purchases.js"></script>
   <script src="/js/tasks.js"></script>
   <script src="/js/dashboard.js"></script>
   <script src="/js/app.js"></script>

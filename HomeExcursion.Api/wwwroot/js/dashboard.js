@@ -5,7 +5,7 @@ async function loadDashboard() {
     state.data = await response.json();
     populateAreaControls();
     render();
-    await loadExpenses();
+    await loadPurchases();
   } catch (error) {
     console.error(error);
     document.querySelector("#tasks").innerHTML = `<div class="empty">Could not load Home Excursion.</div>`;

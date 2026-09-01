@@ -4,9 +4,9 @@ document.addEventListener("DOMContentLoaded", () => {
   bindTaskSort();
   bindTaskEditor();
   bindProjectDetails();
-  bindExpenseEditor();
-  bindExpenseFilters();
-  bindExpenseNavigation();
+  bindPurchaseEditor();
+  bindPurchaseFilters();
+  bindPurchaseNavigation();
   bindImageViewer();
   loadDashboard();
 });
