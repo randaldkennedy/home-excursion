@@ -40,69 +40,150 @@
     </section>
 
     <section class="summary-grid" aria-label="Project summary">
-      <article class="summary-card">
-        <span class="summary-label">Spent</span>
-        <strong id="spent">$—</strong>
-        <span class="summary-note">posted expenses</span>
-      </article>
-      <article class="summary-card">
-        <span class="summary-label">Committed</span>
-        <strong id="committed">$—</strong>
-        <span class="summary-note">approved work</span>
-      </article>
-      <article class="summary-card">
-        <span class="summary-label">Remaining</span>
-        <strong id="remaining">$—</strong>
-        <span class="summary-note">current estimate</span>
-      </article>
-      <article class="summary-card accent-card">
-        <span class="summary-label">Progress</span>
-        <strong id="progressCount">—</strong>
-        <span class="summary-note">projects + punch list</span>
-      </article>
+      <article class="summary-card"><span class="summary-label">Spent</span><strong id="spent">$—</strong><span class="summary-note">all posted expenses</span></article>
+      <article class="summary-card"><span class="summary-label">Maintenance</span><strong id="maintenance">$—</strong><span class="summary-note">service & upkeep</span></article>
+      <article class="summary-card"><span class="summary-label">Committed</span><strong id="committed">$—</strong><span class="summary-note">approved work</span></article>
+      <article class="summary-card"><span class="summary-label">Estimated</span><strong id="estimated">$—</strong><span class="summary-note">known planned estimates</span></article>
+      <article class="summary-card accent-card"><span class="summary-label">Progress</span><strong id="progressCount">—</strong><span class="summary-note">projects + punch list</span></article>
     </section>
 
     <section class="content-grid">
-      <article class="panel projects-panel">
-        <div class="panel-heading">
-          <div>
-            <span class="section-kicker">BIG WORK</span>
-            <h2>Projects</h2>
+      <div class="left-column-stack">
+        <article class="panel projects-panel">
+          <div class="panel-heading"><div><span class="section-kicker">BIG STUFF</span><h2>Projects</h2></div></div>
+          <div id="projects" class="projects-list"><div class="loading">Loading projects…</div></div>
+        </article>
+
+        <article class="panel maintenance-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="section-kicker">UPKEEP</span>
+              <h2>Maintenance</h2>
+            </div>
           </div>
-        </div>
-        <div id="projects" class="projects-list">
-          <div class="loading">Loading projects…</div>
-        </div>
-      </article>
+          <div id="maintenanceList" class="maintenance-list">
+            <div class="loading">Loading maintenance…</div>
+          </div>
+        </article>
+      </div>
 
       <article class="panel tasks-panel">
         <div class="panel-heading tasks-heading">
-          <div>
-            <span class="section-kicker">THE PUNCH LIST</span>
-            <h2>What needs doing</h2>
-          </div>
-          <div class="filter-group" role="group" aria-label="Task filters">
-            <button class="filter-btn active" data-filter="open">Open</button>
-            <button class="filter-btn" data-filter="diy">DIY</button>
-            <button class="filter-btn" data-filter="contractor">Contractor</button>
-            <button class="filter-btn" data-filter="all">All</button>
+          <div><span class="section-kicker">THE PUNCH LIST</span><h2>What needs doing</h2></div>
+          <div class="tasks-actions">
+            <div class="filter-group" role="group" aria-label="Task filters">
+              <button class="filter-btn active" data-filter="open">Open</button>
+              <button class="filter-btn" data-filter="in-progress">In Progress</button>
+              <button class="filter-btn" data-filter="diy">DIY</button>
+              <button class="filter-btn" data-filter="contractor">Contractor</button>
+              <button class="filter-btn" data-filter="all">All</button>
+            </div>
+
+            <select id="areaFilter" class="sort-select" aria-label="Filter by area">
+              <option value="">All areas</option>
+            </select>
+
+            <select id="taskSort" class="sort-select" aria-label="Sort punch list">
+              <option value="smart" selected>Smart sort</option>
+              <option value="area">Area</option>
+              <option value="priority">Priority</option>
+              <option value="target-date">Target date</option>
+              <option value="manual">Manual</option>
+            </select>
+
+            <button id="addTaskButton" class="primary-btn">+ Add task</button>
           </div>
         </div>
 
         <div class="task-stats">
           <span id="taskStats">—</span>
-          <span class="task-tip">Check it off. Watch the list shrink.</span>
+          <span class="task-tip">In progress first. Finished stuff gets out of the way.</span>
         </div>
-
-        <div id="tasks" class="task-list">
-          <div class="loading">Loading punch list…</div>
-        </div>
+        <div id="tasks" class="task-list"><div class="loading">Loading punch list…</div></div>
       </article>
     </section>
   </main>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+  <dialog id="projectDialog" class="modal project-modal">
+    <section class="modal-card">
+      <div class="modal-head">
+        <div>
+          <span class="section-kicker">PROJECT DETAILS</span>
+          <h2 id="projectDialogTitle">Project</h2>
+        </div>
+        <button type="button" class="icon-btn" id="closeProjectDialog" aria-label="Close">×</button>
+      </div>
+
+      <div id="projectDetailBody" class="project-detail-body">
+        <div class="loading">Loading project…</div>
+      </div>
+
+      <div class="modal-actions">
+        <input id="projectDocumentFile" type="file" accept="image/*,application/pdf" hidden>
+        <span id="projectDocumentMessage" class="project-document-message"></span>
+        <div class="modal-actions-right">
+          <button type="button" id="addProjectDocumentButton" class="secondary-btn">+ Add receipt / document</button>
+          <button type="button" id="closeProjectDialogBottom" class="primary-btn">Done</button>
+        </div>
+      </div>
+    </section>
+  </dialog>
+
+  <dialog id="imageViewerDialog" class="image-viewer">
+    <div class="image-viewer-card">
+      <div class="image-viewer-head">
+        <strong id="imageViewerFileName">Receipt</strong>
+        <div class="image-viewer-actions">
+          <a id="imageViewerOpenOriginal" class="secondary-btn" target="_blank" rel="noopener">Open original</a>
+          <button type="button" id="closeImageViewer" class="icon-btn" aria-label="Close">×</button>
+        </div>
+      </div>
+      <div class="image-viewer-stage">
+        <img id="imageViewerImage" alt="">
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="taskDialog" class="modal">
+    <form id="taskForm" class="modal-card">
+      <div class="modal-head">
+        <div><span class="section-kicker">PUNCH LIST</span><h2 id="taskDialogTitle">Add task</h2></div>
+        <button type="button" class="icon-btn" id="closeTaskDialog" aria-label="Close">×</button>
+      </div>
+
+      <input type="hidden" id="taskId">
+
+      <div class="form-grid">
+        <label class="field field-wide"><span>Task</span><input id="taskTitle" maxlength="300" required placeholder="What needs doing?"></label>
+        <label class="field field-wide"><span>Room / area</span><input id="taskArea" maxlength="100" list="areaSuggestions" placeholder="e.g. Grandmama's Room, Kitchen, Exterior"></label>
+        <datalist id="areaSuggestions"></datalist>
+
+        <label class="field"><span>Status</span><select id="taskStatus"><option>To Do</option><option>In Progress</option><option>Waiting</option><option>Ordered</option><option>Cancelled</option><option>Complete</option></select></label>
+        <label class="field"><span>Priority</span><select id="taskPriority"><option>Low</option><option selected>Normal</option><option>High</option></select></label>
+        <label class="field"><span>Project</span><select id="taskProject"></select></label>
+        <label class="field"><span>Estimated cost</span><input id="taskEstimatedCost" type="number" min="0" step="0.01" placeholder="0.00"></label>
+        <label class="field"><span>Target date</span><input id="taskTargetDate" type="date"></label>
+
+        <label class="check-field"><input id="taskContractorNeeded" type="checkbox"><span><strong>Contractor needed</strong><small>Flag this if it isn't a DIY job.</small></span></label>
+
+        <label id="contractorNameField" class="field field-wide contractor-name-field"><span>Contractor / vendor</span><input id="taskContractorName" maxlength="200" placeholder="Optional"></label>
+        <label class="field field-wide"><span>Notes</span><textarea id="taskNotes" rows="4" placeholder="Anything worth remembering…"></textarea></label>
+      </div>
+
+      <div id="taskFormError" class="form-error" hidden></div>
+
+      <div class="modal-actions">
+        <button type="button" id="deleteTaskButton" class="danger-btn" hidden>Delete task</button>
+        <div class="modal-actions-right">
+          <button type="button" id="cancelTaskButton" class="secondary-btn">Cancel</button>
+          <button type="submit" class="primary-btn">Save task</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>
 </html>

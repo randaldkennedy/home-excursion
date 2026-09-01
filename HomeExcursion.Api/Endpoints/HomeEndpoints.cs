@@ -1,4 +1,6 @@
 using HomeExcursion.Api.Data;
+using HomeExcursion.Api.Models;
+using HomeExcursion.Api.Services.Attachments;
 using Microsoft.EntityFrameworkCore;
 
 namespace HomeExcursion.Api.Endpoints;
@@ -11,7 +13,16 @@ public static class HomeEndpoints
             .RequireAuthorization();
 
         group.MapGet("/dashboard", GetDashboardAsync);
+
+        group.MapGet("/projects/{id:int}/details", GetProjectDetailsAsync);
+        group.MapGet("/projects/{id:int}/attachments", GetProjectAttachmentsAsync);
+        group.MapPost("/projects/{id:int}/attachments", UploadProjectAttachmentAsync)
+            .DisableAntiforgery();
+
+        group.MapPost("/tasks", CreateTaskAsync);
+        group.MapPut("/tasks/{id:int}", UpdateTaskAsync);
         group.MapPatch("/tasks/{id:int}/complete", SetTaskCompletionAsync);
+        group.MapDelete("/tasks/{id:int}", DeleteTaskAsync);
 
         return app;
     }
@@ -31,14 +42,14 @@ public static class HomeEndpoints
             return Results.NotFound(new { message = "No active Home Excursion property was found." });
         }
 
-        var projects = await db.Projects
+        var projectRows = await db.Projects
             .AsNoTracking()
             .Where(p => p.PropertyId == property.Id)
-            .OrderBy(p => p.SortOrder)
-            .ThenBy(p => p.Name)
             .Select(p => new
             {
                 p.Id,
+                p.ParentProjectId,
+                ParentProjectName = p.ParentProject != null ? p.ParentProject.Name : null,
                 p.Name,
                 p.Status,
                 p.Purpose,
@@ -47,21 +58,58 @@ public static class HomeEndpoints
                 p.ContractorName,
                 p.TargetDate,
                 p.Notes,
-                p.CompletedAt
+                p.CompletedAt,
+                p.SortOrder
             })
             .ToListAsync(cancellationToken);
+
+        var directProjectSpend = await db.Expenses
+            .AsNoTracking()
+            .Where(e => e.PropertyId == property.Id && e.ProjectId != null)
+            .GroupBy(e => e.ProjectId!.Value)
+            .Select(g => new { ProjectId = g.Key, Amount = g.Sum(e => e.Amount) })
+            .ToDictionaryAsync(x => x.ProjectId, x => x.Amount, cancellationToken);
+
+        decimal RollupProjectSpend(int projectId)
+        {
+            var direct = directProjectSpend.GetValueOrDefault(projectId);
+            var childSpend = projectRows
+                .Where(p => p.ParentProjectId == projectId)
+                .Sum(child => RollupProjectSpend(child.Id));
+            return direct + childSpend;
+        }
+
+        var projects = projectRows
+            .Select(p => new
+            {
+                p.Id,
+                p.ParentProjectId,
+                p.ParentProjectName,
+                p.Name,
+                p.Status,
+                p.Purpose,
+                p.EstimatedCost,
+                p.CommittedCost,
+                p.ContractorName,
+                p.TargetDate,
+                p.Notes,
+                p.CompletedAt,
+                p.SortOrder,
+                DirectSpent = directProjectSpend.GetValueOrDefault(p.Id),
+                ActualSpent = RollupProjectSpend(p.Id)
+            })
+            .ToList();
 
         var tasks = await db.Tasks
             .AsNoTracking()
             .Where(t => t.PropertyId == property.Id)
-            .OrderBy(t => t.SortOrder)
-            .ThenBy(t => t.Title)
             .Select(t => new
             {
                 t.Id,
                 t.ProjectId,
                 ProjectName = t.Project != null ? t.Project.Name : null,
                 t.Title,
+                t.Area,
                 t.Status,
                 t.Priority,
                 t.ContractorNeeded,
@@ -69,7 +117,8 @@ public static class HomeEndpoints
                 t.EstimatedCost,
                 t.TargetDate,
                 t.CompletedAt,
-                t.Notes
+                t.Notes,
+                t.SortOrder
             })
             .ToListAsync(cancellationToken);
 
@@ -77,23 +126,68 @@ public static class HomeEndpoints
             .Where(e => e.PropertyId == property.Id)
             .SumAsync(e => (decimal?)e.Amount, cancellationToken) ?? 0m;
 
-        var committed = projects.Sum(p => p.CommittedCost ?? 0m);
+        var maintenanceExpenses = await db.Expenses
+            .AsNoTracking()
+            .Where(e =>
+                e.PropertyId == property.Id &&
+                e.Category != null &&
+                (e.Category == "Maintenance" ||
+                 e.Category == "HVAC / Maintenance" ||
+                 e.Category.Contains("Maintenance")))
+            .OrderByDescending(e => e.ExpenseDate)
+            .ThenByDescending(e => e.Id)
+            .Select(e => new
+            {
+                e.Id,
+                e.Description,
+                e.Amount,
+                e.ExpenseDate,
+                VendorName = e.VendorRecord != null ? e.VendorRecord.Name : e.Vendor,
+                e.Notes
+            })
+            .ToListAsync(cancellationToken);
 
-        // "Remaining estimated" is intentionally simple for MVP:
-        // estimated project/task cost not yet represented by posted expenses.
+        var maintenance = maintenanceExpenses.Sum(e => e.Amount);
+
+        // "Committed" is work we have approved/contracted but that is not already finished.
+        var committed = projects
+            .Where(p =>
+                !string.Equals(p.Status, "Complete", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(p.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+            .Sum(p => p.CommittedCost ?? 0m);
+
+        // "Estimated" is known planned work, not historical completed work.
+        // Example: the $27,000 kitchen bid belongs here until it is approved.
         var estimated =
-            projects.Sum(p => p.EstimatedCost ?? 0m) +
-            tasks.Sum(t => t.EstimatedCost ?? 0m);
+            projects
+                .Where(p =>
+                    !string.Equals(p.Status, "Complete", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(p.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+                .Sum(p => p.EstimatedCost ?? 0m) +
+            tasks
+                .Where(t =>
+                    !string.Equals(t.Status, "Complete", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(t.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+                .Sum(t => t.EstimatedCost ?? 0m);
 
-        var remainingEstimated = Math.Max(0m, estimated - spent);
+        // Parent projects are organizational rollups. Do not count them again in progress,
+        // otherwise "Bathroom Remodel" plus its two child bathroom projects would double-count work.
+        var parentProjectIds = projects
+            .Where(p => p.ParentProjectId is not null)
+            .Select(p => p.ParentProjectId!.Value)
+            .ToHashSet();
 
-        var completeProjects = projects.Count(p =>
+        var leafProjects = projects
+            .Where(p => !parentProjectIds.Contains(p.Id))
+            .ToList();
+
+        var completeProjects = leafProjects.Count(p =>
             string.Equals(p.Status, "Complete", StringComparison.OrdinalIgnoreCase));
 
         var completeTasks = tasks.Count(t =>
             string.Equals(t.Status, "Complete", StringComparison.OrdinalIgnoreCase));
 
-        var totalItems = projects.Count + tasks.Count;
+        var totalItems = leafProjects.Count + tasks.Count;
         var completeItems = completeProjects + completeTasks;
         var progressPercent = totalItems == 0
             ? 0
@@ -112,8 +206,9 @@ public static class HomeEndpoints
             summary = new
             {
                 spent,
+                maintenance,
                 committed,
-                remainingEstimated,
+                estimated,
                 completeItems,
                 totalItems,
                 progressPercent,
@@ -121,8 +216,412 @@ public static class HomeEndpoints
                 completedTaskCount = completeTasks
             },
             projects,
-            tasks
+            tasks,
+            maintenanceExpenses
         });
+    }
+
+    private static async Task<IResult> GetProjectDetailsAsync(
+        int id,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        CancellationToken cancellationToken)
+    {
+        var project = await db.Projects
+            .AsNoTracking()
+            .Where(p => p.Id == id)
+            .Select(p => new
+            {
+                p.Id,
+                p.PropertyId,
+                p.ParentProjectId,
+                p.Name,
+                p.Status,
+                p.Purpose,
+                p.EstimatedCost,
+                p.CommittedCost,
+                p.ContractorName,
+                p.TargetDate,
+                p.CompletedAt,
+                p.Notes,
+                HouseholdId = p.Property.HouseholdId
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (project is null)
+            return Results.NotFound();
+
+        var scopeIds = await GetProjectScopeIdsAsync(id, project.PropertyId, db, cancellationToken);
+
+        var children = await db.Projects
+            .AsNoTracking()
+            .Where(p => scopeIds.Contains(p.Id) && p.Id != id)
+            .OrderBy(p => p.SortOrder)
+            .ThenBy(p => p.Name)
+            .Select(p => new
+            {
+                p.Id,
+                p.ParentProjectId,
+                p.Name,
+                p.Status
+            })
+            .ToListAsync(cancellationToken);
+
+        var expenses = await db.Expenses
+            .AsNoTracking()
+            .Where(e => e.ProjectId != null && scopeIds.Contains(e.ProjectId.Value))
+            .OrderByDescending(e => e.ExpenseDate)
+            .ThenByDescending(e => e.Id)
+            .Select(e => new
+            {
+                e.Id,
+                e.ProjectId,
+                ProjectName = e.Project != null ? e.Project.Name : null,
+                e.Description,
+                e.Vendor,
+                VendorName = e.VendorRecord != null ? e.VendorRecord.Name : null,
+                e.Amount,
+                e.ExpenseDate,
+                e.Category,
+                e.Notes
+            })
+            .ToListAsync(cancellationToken);
+
+        var expenseEntityIds = expenses.Select(e => e.Id.ToString()).ToHashSet();
+        var projectEntityIds = scopeIds.Select(x => x.ToString()).ToHashSet();
+
+        var attachments = await platformDb.Attachments
+            .AsNoTracking()
+            .Where(a =>
+                a.IsActive &&
+                a.HouseholdId == project.HouseholdId &&
+                a.App == "home" &&
+                (
+                    (a.EntityType == "HomeProject" && a.EntityId != null && projectEntityIds.Contains(a.EntityId)) ||
+                    (a.EntityType == "Expense" && a.EntityId != null && expenseEntityIds.Contains(a.EntityId))
+                ))
+            .OrderByDescending(a => a.UploadedUtc)
+            .Select(a => new
+            {
+                a.Id,
+                a.Category,
+                a.EntityType,
+                a.EntityId,
+                a.FileName,
+                a.ContentType,
+                a.FileSizeBytes,
+                a.UploadedUtc
+            })
+            .ToListAsync(cancellationToken);
+
+        var actualSpent = expenses.Sum(e => e.Amount);
+
+        return Results.Ok(new
+        {
+            project,
+            children,
+            expenses,
+            attachments,
+            actualSpent,
+            documentCount = attachments.Count
+        });
+    }
+
+    private static async Task<IResult> GetProjectAttachmentsAsync(
+        int id,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        CancellationToken cancellationToken)
+    {
+        var project = await db.Projects
+            .AsNoTracking()
+            .Where(p => p.Id == id)
+            .Select(p => new
+            {
+                p.Id,
+                p.PropertyId,
+                HouseholdId = p.Property.HouseholdId
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (project is null)
+            return Results.NotFound();
+
+        var scopeIds = await GetProjectScopeIdsAsync(id, project.PropertyId, db, cancellationToken);
+        var entityIds = scopeIds.Select(x => x.ToString()).ToHashSet();
+
+        var attachments = await platformDb.Attachments
+            .AsNoTracking()
+            .Where(a =>
+                a.IsActive &&
+                a.HouseholdId == project.HouseholdId &&
+                a.App == "home" &&
+                a.EntityType == "HomeProject" &&
+                a.EntityId != null &&
+                entityIds.Contains(a.EntityId))
+            .OrderByDescending(a => a.UploadedUtc)
+            .Select(a => new
+            {
+                a.Id,
+                a.Category,
+                a.EntityType,
+                a.EntityId,
+                a.FileName,
+                a.ContentType,
+                a.FileSizeBytes,
+                a.UploadedUtc
+            })
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(attachments);
+    }
+
+    private static async Task<IResult> UploadProjectAttachmentAsync(
+        int id,
+        IFormFile file,
+        HttpContext httpContext,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        IAttachmentStorageService storage,
+        CancellationToken cancellationToken)
+    {
+        const long MaxUploadBytes = 20L * 1024L * 1024L;
+
+        if (file.Length <= 0)
+            return Results.BadRequest(new { message = "Choose a file to upload." });
+
+        if (file.Length > MaxUploadBytes)
+            return Results.BadRequest(new { message = "Files must be 20 MB or smaller." });
+
+        var isImage = file.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true;
+        var isPdf = string.Equals(file.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase);
+
+        if (!isImage && !isPdf)
+            return Results.BadRequest(new { message = "Home documents currently support images and PDF files." });
+
+        var project = await db.Projects
+            .AsNoTracking()
+            .Where(p => p.Id == id)
+            .Select(p => new
+            {
+                p.Id,
+                HouseholdId = p.Property.HouseholdId
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (project is null)
+            return Results.NotFound();
+
+        var userId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!userId.HasValue)
+            return Results.Unauthorized();
+
+        var hasAccess = await platformDb.HouseholdMembers
+            .AnyAsync(
+                hm => hm.UserId == userId.Value && hm.HouseholdId == project.HouseholdId,
+                cancellationToken);
+
+        if (!hasAccess)
+            return Results.NotFound();
+
+        StoredAttachment stored;
+        await using (var stream = file.OpenReadStream())
+        {
+            stored = await storage.UploadAsync(
+                project.HouseholdId,
+                "home",
+                "project-document",
+                Path.GetFileName(file.FileName),
+                file.ContentType ?? "application/octet-stream",
+                stream,
+                cancellationToken);
+        }
+
+        var attachment = new Attachment
+        {
+            HouseholdId = project.HouseholdId,
+            UploadedByUserId = userId.Value,
+            App = "home",
+            Category = "project-document",
+            EntityType = "HomeProject",
+            EntityId = id.ToString(),
+            FileName = Path.GetFileName(file.FileName),
+            ContentType = file.ContentType ?? "application/octet-stream",
+            BlobName = stored.BlobName,
+            FileSizeBytes = stored.FileSizeBytes,
+            UploadedUtc = DateTime.UtcNow,
+            IsActive = true
+        };
+
+        try
+        {
+            platformDb.Attachments.Add(attachment);
+            await platformDb.SaveChangesAsync(cancellationToken);
+        }
+        catch
+        {
+            await storage.DeleteAsync(stored.BlobName, cancellationToken);
+            throw;
+        }
+
+        if (isImage)
+        {
+            await AttachmentThumbnailHelper.EnsureCreatedAsync(
+                attachment.BlobName,
+                storage,
+                cancellationToken);
+        }
+
+        return Results.Created(
+            $"/api/attachments/{attachment.Id}",
+            new
+            {
+                attachment.Id,
+                attachment.FileName,
+                attachment.ContentType,
+                attachment.FileSizeBytes,
+                attachment.UploadedUtc
+            });
+    }
+
+    private static async Task<HashSet<int>> GetProjectScopeIdsAsync(
+        int rootProjectId,
+        int propertyId,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var projectTree = await db.Projects
+            .AsNoTracking()
+            .Where(p => p.PropertyId == propertyId)
+            .Select(p => new { p.Id, p.ParentProjectId })
+            .ToListAsync(cancellationToken);
+
+        var result = new HashSet<int> { rootProjectId };
+        var queue = new Queue<int>();
+        queue.Enqueue(rootProjectId);
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            foreach (var child in projectTree.Where(p => p.ParentProjectId == current))
+            {
+                if (result.Add(child.Id))
+                    queue.Enqueue(child.Id);
+            }
+        }
+
+        return result;
+    }
+
+    private const string EntraObjectIdClaim =
+        "http://schemas.microsoft.com/identity/claims/objectidentifier";
+
+    private static async Task<int?> GetCurrentUserIdAsync(
+        HttpContext httpContext,
+        LaUltimaExcursionDbContext platformDb,
+        CancellationToken cancellationToken)
+    {
+        var entraObjectId =
+            httpContext.User.FindFirst(EntraObjectIdClaim)?.Value
+            ?? httpContext.User.FindFirst("oid")?.Value;
+
+        if (string.IsNullOrWhiteSpace(entraObjectId))
+            return null;
+
+        return await platformDb.Users
+            .Where(u => u.EntraObjectId == entraObjectId)
+            .Select(u => (int?)u.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
+    private sealed record SaveTaskRequest(
+        int PropertyId,
+        int? ProjectId,
+        string Title,
+        string? Area,
+        string? Status,
+        string? Priority,
+        bool ContractorNeeded,
+        string? ContractorName,
+        decimal? EstimatedCost,
+        DateOnly? TargetDate,
+        string? Notes);
+
+    private static async Task<IResult> CreateTaskAsync(
+        SaveTaskRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var validation = await ValidateTaskRequestAsync(request, db, cancellationToken);
+        if (validation is not null) return validation;
+
+        var nextSortOrder = await db.Tasks
+            .Where(t => t.PropertyId == request.PropertyId)
+            .Select(t => (int?)t.SortOrder)
+            .MaxAsync(cancellationToken) ?? 0;
+
+        var task = new HomeTask
+        {
+            PropertyId = request.PropertyId,
+            ProjectId = request.ProjectId,
+            Title = request.Title.Trim(),
+            Area = Clean(request.Area),
+            Status = NormalizeStatus(request.Status),
+            Priority = NormalizePriority(request.Priority),
+            ContractorNeeded = request.ContractorNeeded,
+            ContractorName = Clean(request.ContractorName),
+            EstimatedCost = request.EstimatedCost,
+            TargetDate = request.TargetDate,
+            Notes = Clean(request.Notes),
+            SortOrder = nextSortOrder + 10,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        if (string.Equals(task.Status, "Complete", StringComparison.OrdinalIgnoreCase))
+            task.CompletedAt = DateTime.UtcNow;
+
+        db.Tasks.Add(task);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Created($"/api/home/tasks/{task.Id}", new { task.Id });
+    }
+
+    private static async Task<IResult> UpdateTaskAsync(
+        int id,
+        SaveTaskRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken);
+        if (task is null) return Results.NotFound();
+
+        var validation = await ValidateTaskRequestAsync(request, db, cancellationToken);
+        if (validation is not null) return validation;
+
+        var oldStatus = task.Status;
+        var newStatus = NormalizeStatus(request.Status);
+
+        task.PropertyId = request.PropertyId;
+        task.ProjectId = request.ProjectId;
+        task.Title = request.Title.Trim();
+        task.Area = Clean(request.Area);
+        task.Status = newStatus;
+        task.Priority = NormalizePriority(request.Priority);
+        task.ContractorNeeded = request.ContractorNeeded;
+        task.ContractorName = Clean(request.ContractorName);
+        task.EstimatedCost = request.EstimatedCost;
+        task.TargetDate = request.TargetDate;
+        task.Notes = Clean(request.Notes);
+
+        if (!string.Equals(oldStatus, "Complete", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(newStatus, "Complete", StringComparison.OrdinalIgnoreCase))
+            task.CompletedAt = DateTime.UtcNow;
+        else if (string.Equals(oldStatus, "Complete", StringComparison.OrdinalIgnoreCase) &&
+                 !string.Equals(newStatus, "Complete", StringComparison.OrdinalIgnoreCase))
+            task.CompletedAt = null;
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(new { task.Id });
     }
 
     private sealed record SetTaskCompletionRequest(bool Completed);
@@ -133,24 +632,96 @@ public static class HomeEndpoints
         HomeExcursionDbContext db,
         CancellationToken cancellationToken)
     {
-        var task = await db.Tasks
-            .FirstOrDefaultAsync(t => t.Id == id, cancellationToken);
-
-        if (task is null)
-        {
-            return Results.NotFound();
-        }
+        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken);
+        if (task is null) return Results.NotFound();
 
         task.Status = request.Completed ? "Complete" : "To Do";
         task.CompletedAt = request.Completed ? DateTime.UtcNow : null;
 
         await db.SaveChangesAsync(cancellationToken);
 
-        return Results.Ok(new
-        {
-            task.Id,
-            task.Status,
-            task.CompletedAt
-        });
+        return Results.Ok(new { task.Id, task.Status, task.CompletedAt });
     }
+
+    private static async Task<IResult> DeleteTaskAsync(
+        int id,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var task = await db.Tasks
+            .Include(t => t.Expenses)
+            .FirstOrDefaultAsync(t => t.Id == id, cancellationToken);
+
+        if (task is null) return Results.NotFound();
+
+        if (task.Expenses.Count > 0)
+        {
+            return Results.Conflict(new
+            {
+                message = "This task has expenses attached to it. Remove or reassign those expenses before deleting the task."
+            });
+        }
+
+        db.Tasks.Remove(task);
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult?> ValidateTaskRequestAsync(
+        SaveTaskRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Title))
+            return Results.BadRequest(new { message = "Task title is required." });
+
+        if (request.Title.Trim().Length > 300)
+            return Results.BadRequest(new { message = "Task title must be 300 characters or fewer." });
+
+        if (request.Area?.Trim().Length > 100)
+            return Results.BadRequest(new { message = "Area must be 100 characters or fewer." });
+
+        if (request.EstimatedCost < 0)
+            return Results.BadRequest(new { message = "Estimated cost cannot be negative." });
+
+        var propertyExists = await db.Properties
+            .AnyAsync(p => p.Id == request.PropertyId, cancellationToken);
+
+        if (!propertyExists)
+            return Results.BadRequest(new { message = "Property was not found." });
+
+        if (request.ProjectId is not null)
+        {
+            var projectExists = await db.Projects.AnyAsync(
+                p => p.Id == request.ProjectId && p.PropertyId == request.PropertyId,
+                cancellationToken);
+
+            if (!projectExists)
+                return Results.BadRequest(new { message = "Selected project does not belong to this property." });
+        }
+
+        return null;
+    }
+
+    private static string NormalizeStatus(string? value) =>
+        value?.Trim() switch
+        {
+            "In Progress" => "In Progress",
+            "Waiting" => "Waiting",
+            "Ordered" => "Ordered",
+            "Cancelled" => "Cancelled",
+            "Complete" => "Complete",
+            _ => "To Do"
+        };
+
+    private static string NormalizePriority(string? value) =>
+        value?.Trim() switch
+        {
+            "Low" => "Low",
+            "High" => "High",
+            _ => "Normal"
+        };
+
+    private static string? Clean(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

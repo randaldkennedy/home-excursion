@@ -4,6 +4,7 @@ using HomeExcursion.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace HomeExcursion.Api.Migrations.Home
 {
     [DbContext(typeof(HomeExcursionDbContext))]
-    partial class HomeExcursionDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260830210735_AddProjectHierarchy")]
+    partial class AddProjectHierarchy
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -47,7 +50,7 @@ namespace HomeExcursion.Api.Migrations.Home
                         .HasMaxLength(300)
                         .HasColumnType("nvarchar(300)");
 
-                    b.Property<DateOnly?>("ExpenseDate")
+                    b.Property<DateOnly>("ExpenseDate")
                         .HasColumnType("date");
 
                     b.Property<string>("Notes")
@@ -66,16 +69,11 @@ namespace HomeExcursion.Api.Migrations.Home
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
-                    b.Property<int?>("VendorId")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
 
                     b.HasIndex("ProjectId");
 
                     b.HasIndex("TaskId");
-
-                    b.HasIndex("VendorId");
 
                     b.HasIndex("PropertyId", "ExpenseDate");
 
@@ -261,67 +259,6 @@ namespace HomeExcursion.Api.Migrations.Home
                     b.ToTable("Properties", "home");
                 });
 
-            modelBuilder.Entity("HomeExcursion.Api.Models.Vendor", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Address1")
-                        .HasMaxLength(250)
-                        .HasColumnType("nvarchar(250)");
-
-                    b.Property<string>("Address2")
-                        .HasMaxLength(250)
-                        .HasColumnType("nvarchar(250)");
-
-                    b.Property<string>("City")
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Email")
-                        .HasMaxLength(254)
-                        .HasColumnType("nvarchar(254)");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("bit");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<string>("Notes")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("Phone")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<string>("PostalCode")
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
-
-                    b.Property<string>("State")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<string>("Website")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Name");
-
-                    b.ToTable("Vendors", "home");
-                });
-
             modelBuilder.Entity("HomeExcursion.Api.Models.Expense", b =>
                 {
                     b.HasOne("HomeExcursion.Api.Models.HomeProject", "Project")
@@ -340,18 +277,11 @@ namespace HomeExcursion.Api.Migrations.Home
                         .HasForeignKey("TaskId")
                         .OnDelete(DeleteBehavior.NoAction);
 
-                    b.HasOne("HomeExcursion.Api.Models.Vendor", "VendorRecord")
-                        .WithMany("Expenses")
-                        .HasForeignKey("VendorId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
                     b.Navigation("Project");
 
                     b.Navigation("Property");
 
                     b.Navigation("Task");
-
-                    b.Navigation("VendorRecord");
                 });
 
             modelBuilder.Entity("HomeExcursion.Api.Models.HomeProject", b =>
@@ -411,11 +341,6 @@ namespace HomeExcursion.Api.Migrations.Home
                     b.Navigation("Projects");
 
                     b.Navigation("Tasks");
-                });
-
-            modelBuilder.Entity("HomeExcursion.Api.Models.Vendor", b =>
-                {
-                    b.Navigation("Expenses");
                 });
 #pragma warning restore 612, 618
         }

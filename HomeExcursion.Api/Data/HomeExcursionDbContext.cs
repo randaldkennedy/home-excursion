@@ -15,6 +15,7 @@ public class HomeExcursionDbContext : DbContext
     public DbSet<HomeProject> Projects => Set<HomeProject>();
     public DbSet<HomeTask> Tasks => Set<HomeTask>();
     public DbSet<Expense> Expenses => Set<Expense>();
+    public DbSet<Vendor> Vendors => Set<Vendor>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -70,7 +71,13 @@ public class HomeExcursionDbContext : DbContext
                 .HasForeignKey(p => p.PropertyId)
                 .OnDelete(DeleteBehavior.Cascade);
 
+            entity.HasOne(p => p.ParentProject)
+                .WithMany(p => p.ChildProjects)
+                .HasForeignKey(p => p.ParentProjectId)
+                .OnDelete(DeleteBehavior.NoAction);
+
             entity.HasIndex(p => new { p.PropertyId, p.Status });
+            entity.HasIndex(p => p.ParentProjectId);
         });
 
         modelBuilder.Entity<HomeTask>(entity =>
@@ -80,6 +87,9 @@ public class HomeExcursionDbContext : DbContext
             entity.Property(t => t.Title)
                 .HasMaxLength(300)
                 .IsRequired();
+
+            entity.Property(t => t.Area)
+                .HasMaxLength(100);
 
             entity.Property(t => t.Status)
                 .HasMaxLength(40)
@@ -106,7 +116,42 @@ public class HomeExcursionDbContext : DbContext
                 .OnDelete(DeleteBehavior.NoAction);
 
             entity.HasIndex(t => new { t.PropertyId, t.Status, t.SortOrder });
+            entity.HasIndex(t => new { t.PropertyId, t.Area });
             entity.HasIndex(t => t.ProjectId);
+        });
+
+
+        modelBuilder.Entity<Vendor>(entity =>
+        {
+            entity.Property(v => v.Name)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(v => v.Phone)
+                .HasMaxLength(50);
+
+            entity.Property(v => v.Email)
+                .HasMaxLength(254);
+
+            entity.Property(v => v.Website)
+                .HasMaxLength(500);
+
+            entity.Property(v => v.Address1)
+                .HasMaxLength(250);
+
+            entity.Property(v => v.Address2)
+                .HasMaxLength(250);
+
+            entity.Property(v => v.City)
+                .HasMaxLength(100);
+
+            entity.Property(v => v.State)
+                .HasMaxLength(50);
+
+            entity.Property(v => v.PostalCode)
+                .HasMaxLength(20);
+
+            entity.HasIndex(v => v.Name);
         });
 
         modelBuilder.Entity<Expense>(entity =>
@@ -139,9 +184,15 @@ public class HomeExcursionDbContext : DbContext
                 .HasForeignKey(e => e.TaskId)
                 .OnDelete(DeleteBehavior.NoAction);
 
+            entity.HasOne(e => e.VendorRecord)
+                .WithMany(v => v.Expenses)
+                .HasForeignKey(e => e.VendorId)
+                .OnDelete(DeleteBehavior.SetNull);
+
             entity.HasIndex(e => new { e.PropertyId, e.ExpenseDate });
             entity.HasIndex(e => e.ProjectId);
             entity.HasIndex(e => e.TaskId);
+            entity.HasIndex(e => e.VendorId);
         });
     }
 }

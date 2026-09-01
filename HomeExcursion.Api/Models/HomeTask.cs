@@ -10,6 +10,8 @@ public class HomeTask
 
     public string Title { get; set; } = string.Empty;
 
+    public string? Area { get; set; }
+
     public string Status { get; set; } = "To Do";
 
     public string Priority { get; set; } = "Normal";

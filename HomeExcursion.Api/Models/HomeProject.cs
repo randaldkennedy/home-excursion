@@ -6,6 +6,8 @@ public class HomeProject
 
     public int PropertyId { get; set; }
 
+    public int? ParentProjectId { get; set; }
+
     public string Name { get; set; } = string.Empty;
 
     public string Status { get; set; } = "Planned";
@@ -29,6 +31,10 @@ public class HomeProject
     public DateTime? CompletedAt { get; set; }
 
     public Property Property { get; set; } = null!;
+
+    public HomeProject? ParentProject { get; set; }
+
+    public ICollection<HomeProject> ChildProjects { get; set; } = new List<HomeProject>();
 
     public ICollection<HomeTask> Tasks { get; set; } = new List<HomeTask>();
 
