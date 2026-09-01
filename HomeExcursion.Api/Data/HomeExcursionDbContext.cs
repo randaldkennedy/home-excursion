@@ -16,6 +16,8 @@ public class HomeExcursionDbContext : DbContext
     public DbSet<HomeTask> Tasks => Set<HomeTask>();
     public DbSet<Expense> Expenses => Set<Expense>();
     public DbSet<Vendor> Vendors => Set<Vendor>();
+    public DbSet<Area> Areas => Set<Area>();
+    public DbSet<TaskArea> TaskAreas => Set<TaskArea>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -118,6 +120,39 @@ public class HomeExcursionDbContext : DbContext
             entity.HasIndex(t => new { t.PropertyId, t.Status, t.SortOrder });
             entity.HasIndex(t => new { t.PropertyId, t.Area });
             entity.HasIndex(t => t.ProjectId);
+        });
+
+
+
+        modelBuilder.Entity<Area>(entity =>
+        {
+            entity.ToTable("Areas");
+
+            entity.Property(a => a.Name)
+                .HasMaxLength(100)
+                .IsRequired();
+
+            entity.HasIndex(a => new { a.PropertyId, a.Name })
+                .IsUnique();
+        });
+
+        modelBuilder.Entity<TaskArea>(entity =>
+        {
+            entity.ToTable("TaskAreas");
+
+            entity.HasKey(ta => new { ta.TaskId, ta.AreaId });
+
+            entity.HasOne(ta => ta.Task)
+                .WithMany(t => t.TaskAreas)
+                .HasForeignKey(ta => ta.TaskId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(ta => ta.Area)
+                .WithMany(a => a.TaskAreas)
+                .HasForeignKey(ta => ta.AreaId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(ta => ta.AreaId);
         });
 
 

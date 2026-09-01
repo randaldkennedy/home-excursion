@@ -40,7 +40,11 @@
     </section>
 
     <section class="summary-grid" aria-label="Project summary">
-      <article class="summary-card"><span class="summary-label">Spent</span><strong id="spent">$—</strong><span class="summary-note">all posted expenses</span></article>
+      <article id="spentSummaryCard" class="summary-card summary-card-link" role="button" tabindex="0" aria-label="View expenses">
+  <span class="summary-label">Spent</span>
+  <strong id="spent">$—</strong>
+  <span class="summary-note">all posted expenses · view details ↓</span>
+</article>
       <article class="summary-card"><span class="summary-label">Maintenance</span><strong id="maintenance">$—</strong><span class="summary-note">service & upkeep</span></article>
       <article class="summary-card"><span class="summary-label">Committed</span><strong id="committed">$—</strong><span class="summary-note">approved work</span></article>
       <article class="summary-card"><span class="summary-label">Estimated</span><strong id="estimated">$—</strong><span class="summary-note">known planned estimates</span></article>
@@ -102,6 +106,38 @@
         <div id="tasks" class="task-list"><div class="loading">Loading punch list…</div></div>
       </article>
     </section>
+
+    <section class="panel expenses-panel">
+      <div class="panel-heading expenses-heading">
+        <div>
+          <span class="section-kicker">MONEY OUT</span>
+          <h2>Expenses</h2>
+        </div>
+        <button id="addExpenseButton" class="primary-btn">+ Add expense</button>
+      </div>
+
+      <div class="expense-toolbar">
+        <input id="expenseSearch" class="expense-search" type="search" placeholder="Search vendor, description, category…">
+        <select id="expenseProjectFilter" class="sort-select" aria-label="Filter expenses by project">
+          <option value="">All projects</option>
+        </select>
+        <select id="expenseSort" class="sort-select" aria-label="Sort expenses">
+          <option value="newest" selected>Newest first</option>
+          <option value="oldest">Oldest first</option>
+          <option value="highest">Highest amount</option>
+          <option value="lowest">Lowest amount</option>
+        </select>
+      </div>
+
+      <div class="expense-summary-line">
+        <span id="expenseStats">Loading expenses…</span>
+        <span>Click an expense to edit it or attach a receipt.</span>
+      </div>
+
+      <div id="expenses" class="expenses-list">
+        <div class="loading">Loading expenses…</div>
+      </div>
+    </section>
   </main>
 
 
@@ -145,6 +181,92 @@
     </div>
   </dialog>
 
+  <dialog id="expenseDialog" class="modal expense-modal">
+    <form id="expenseForm" class="modal-card">
+      <div class="modal-head">
+        <div>
+          <span class="section-kicker">EXPENSE</span>
+          <h2 id="expenseDialogTitle">Add expense</h2>
+        </div>
+        <button type="button" class="icon-btn" id="closeExpenseDialog" aria-label="Close">×</button>
+      </div>
+
+      <input type="hidden" id="expenseId">
+
+      <div class="form-grid">
+        <label class="field">
+          <span>Date</span>
+          <input id="expenseDate" type="date">
+        </label>
+
+        <label class="field">
+          <span>Amount</span>
+          <input id="expenseAmount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" required>
+        </label>
+
+        <label class="field field-wide">
+          <span>Vendor</span>
+          <input id="expenseVendor" maxlength="200" placeholder="e.g. Ace Hardware">
+        </label>
+
+        <label class="field field-wide">
+          <span>Description</span>
+          <input id="expenseDescription" maxlength="300" required placeholder="What did you buy or pay for?">
+        </label>
+
+        <label class="field">
+          <span>Category</span>
+          <input id="expenseCategory" maxlength="100" list="expenseCategorySuggestions" placeholder="Materials">
+          <datalist id="expenseCategorySuggestions">
+            <option value="Materials"></option>
+            <option value="Fixture"></option>
+            <option value="Contractor"></option>
+            <option value="Maintenance"></option>
+            <option value="HVAC / Maintenance"></option>
+            <option value="Lighting"></option>
+            <option value="Paint"></option>
+            <option value="Landscaping"></option>
+          </datalist>
+        </label>
+
+        <label class="field">
+          <span>Project</span>
+          <select id="expenseProject"></select>
+        </label>
+
+        <label class="field field-wide">
+          <span>Task</span>
+          <select id="expenseTask"></select>
+        </label>
+
+        <label class="field field-wide">
+          <span>Notes</span>
+          <textarea id="expenseNotes" rows="3" placeholder="Anything worth remembering…"></textarea>
+        </label>
+
+        <div class="field field-wide expense-receipt-field">
+          <span>Receipt / document</span>
+          <label class="receipt-picker">
+            <input id="expenseReceiptFiles" type="file" accept="image/*,application/pdf" multiple hidden>
+            <span class="secondary-btn">Choose file(s)</span>
+            <small id="expenseReceiptSelection">Photos or PDFs, up to 20 MB each.</small>
+          </label>
+          <div id="expenseExistingReceipts" class="expense-existing-receipts"></div>
+        </div>
+      </div>
+
+      <div id="expenseFormError" class="form-error" hidden></div>
+
+      <div class="modal-actions">
+        <button type="button" id="deleteExpenseButton" class="danger-btn" hidden>Delete expense</button>
+        <div class="modal-actions-right">
+          <button type="button" id="cancelExpenseButton" class="secondary-btn">Cancel</button>
+          <button type="submit" class="primary-btn">Save expense</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="taskDialog" class="modal">
     <form id="taskForm" class="modal-card">
       <div class="modal-head">
@@ -156,7 +278,17 @@
 
       <div class="form-grid">
         <label class="field field-wide"><span>Task</span><input id="taskTitle" maxlength="300" required placeholder="What needs doing?"></label>
-        <label class="field field-wide"><span>Room / area</span><input id="taskArea" maxlength="100" list="areaSuggestions" placeholder="e.g. Grandmama's Room, Kitchen, Exterior"></label>
+        <div class="field field-wide">
+          <span>Rooms / areas</span>
+          <div class="area-tag-editor">
+            <div id="taskAreaTags" class="area-tag-list"></div>
+            <div class="area-tag-entry">
+              <input id="taskAreaInput" maxlength="100" list="areaSuggestions" placeholder="Type a room / area">
+              <button type="button" id="addTaskAreaButton" class="secondary-btn area-add-btn">Add</button>
+            </div>
+          </div>
+          <small class="field-help">A task can apply to several rooms. Add as many as you need.</small>
+        </div>
         <datalist id="areaSuggestions"></datalist>
 
         <label class="field"><span>Status</span><select id="taskStatus"><option>To Do</option><option>In Progress</option><option>Waiting</option><option>Ordered</option><option>Cancelled</option><option>Complete</option></select></label>
@@ -165,9 +297,26 @@
         <label class="field"><span>Estimated cost</span><input id="taskEstimatedCost" type="number" min="0" step="0.01" placeholder="0.00"></label>
         <label class="field"><span>Target date</span><input id="taskTargetDate" type="date"></label>
 
-        <label class="check-field"><input id="taskContractorNeeded" type="checkbox"><span><strong>Contractor needed</strong><small>Flag this if it isn't a DIY job.</small></span></label>
+        <label class="check-field check-field-compact">
+          <input id="taskContractorNeeded" type="checkbox">
+          <span><strong>Contractor needed</strong><small>Not a DIY job</small></span>
+        </label>
 
         <label id="contractorNameField" class="field field-wide contractor-name-field"><span>Contractor / vendor</span><input id="taskContractorName" maxlength="200" placeholder="Optional"></label>
+
+        <section id="taskExpensesSection" class="task-expenses-section field-wide">
+          <div class="task-expenses-head">
+            <div>
+              <span class="field-section-label">Expenses</span>
+              <strong id="taskExpenseTotal">$0.00</strong>
+            </div>
+            <button type="button" id="addTaskExpenseButton" class="secondary-btn">+ Add expense</button>
+          </div>
+          <div id="taskExpensesList" class="task-expenses-list">
+            <div class="empty compact">Save the task first, then expenses can be attached to it.</div>
+          </div>
+        </section>
+
         <label class="field field-wide"><span>Notes</span><textarea id="taskNotes" rows="4" placeholder="Anything worth remembering…"></textarea></label>
       </div>
 

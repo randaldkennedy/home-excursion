@@ -37,4 +37,8 @@ public class HomeTask
     public HomeProject? Project { get; set; }
 
     public ICollection<Expense> Expenses { get; set; } = new List<Expense>();
+
+    // Area is kept temporarily for backwards compatibility while existing
+    // single-area data is migrated into TaskAreas.
+    public ICollection<TaskArea> TaskAreas { get; set; } = new List<TaskArea>();
 }

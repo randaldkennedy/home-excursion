@@ -19,6 +19,13 @@ public static class HomeEndpoints
         group.MapPost("/projects/{id:int}/attachments", UploadProjectAttachmentAsync)
             .DisableAntiforgery();
 
+        group.MapGet("/expenses", GetExpensesAsync);
+        group.MapPost("/expenses", CreateExpenseAsync);
+        group.MapPut("/expenses/{id:int}", UpdateExpenseAsync);
+        group.MapDelete("/expenses/{id:int}", DeleteExpenseAsync);
+        group.MapPost("/expenses/{id:int}/attachments", UploadExpenseAttachmentAsync)
+            .DisableAntiforgery();
+
         group.MapPost("/tasks", CreateTaskAsync);
         group.MapPut("/tasks/{id:int}", UpdateTaskAsync);
         group.MapPatch("/tasks/{id:int}/complete", SetTaskCompletionAsync);
@@ -100,16 +107,29 @@ public static class HomeEndpoints
             })
             .ToList();
 
-        var tasks = await db.Tasks
+        var taskRows = await db.Tasks
             .AsNoTracking()
+            .Include(t => t.Project)
+            .Include(t => t.TaskAreas)
+                .ThenInclude(ta => ta.Area)
             .Where(t => t.PropertyId == property.Id)
+            .ToListAsync(cancellationToken);
+
+        var tasks = taskRows
             .Select(t => new
             {
                 t.Id,
                 t.ProjectId,
                 ProjectName = t.Project != null ? t.Project.Name : null,
                 t.Title,
-                t.Area,
+                Area = t.TaskAreas.Count > 0
+                    ? t.TaskAreas.Select(ta => ta.Area.Name).OrderBy(x => x).FirstOrDefault()
+                    : t.Area,
+                Areas = t.TaskAreas.Count > 0
+                    ? t.TaskAreas.Select(ta => ta.Area.Name).OrderBy(x => x).ToList()
+                    : string.IsNullOrWhiteSpace(t.Area)
+                        ? new List<string>()
+                        : new List<string> { t.Area },
                 t.Status,
                 t.Priority,
                 t.ContractorNeeded,
@@ -120,7 +140,7 @@ public static class HomeEndpoints
                 t.Notes,
                 t.SortOrder
             })
-            .ToListAsync(cancellationToken);
+            .ToList();
 
         var spent = await db.Expenses
             .Where(e => e.PropertyId == property.Id)
@@ -484,6 +504,387 @@ public static class HomeEndpoints
             });
     }
 
+    private static async Task<IResult> GetExpensesAsync(
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        CancellationToken cancellationToken)
+    {
+        var property = await db.Properties
+            .AsNoTracking()
+            .Where(p => p.IsActive)
+            .OrderBy(p => p.Id)
+            .Select(p => new { p.Id, p.HouseholdId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (property is null)
+            return Results.NotFound(new { message = "No active Home Excursion property was found." });
+
+        var expenses = await db.Expenses
+            .AsNoTracking()
+            .Where(e => e.PropertyId == property.Id)
+            .OrderByDescending(e => e.ExpenseDate)
+            .ThenByDescending(e => e.Id)
+            .Select(e => new
+            {
+                e.Id,
+                e.PropertyId,
+                e.ProjectId,
+                ProjectName = e.Project != null ? e.Project.Name : null,
+                e.TaskId,
+                TaskTitle = e.Task != null ? e.Task.Title : null,
+                e.Description,
+                e.Vendor,
+                VendorName = e.VendorRecord != null ? e.VendorRecord.Name : e.Vendor,
+                e.Amount,
+                e.ExpenseDate,
+                e.Category,
+                e.Notes
+            })
+            .ToListAsync(cancellationToken);
+
+        var expenseEntityIds = expenses.Select(e => e.Id.ToString()).ToHashSet();
+
+        var attachments = await platformDb.Attachments
+            .AsNoTracking()
+            .Where(a =>
+                a.IsActive &&
+                a.HouseholdId == property.HouseholdId &&
+                a.App == "home" &&
+                a.EntityType == "Expense" &&
+                a.EntityId != null &&
+                expenseEntityIds.Contains(a.EntityId))
+            .OrderByDescending(a => a.UploadedUtc)
+            .Select(a => new
+            {
+                a.Id,
+                a.EntityId,
+                a.Category,
+                a.FileName,
+                a.ContentType,
+                a.FileSizeBytes,
+                a.UploadedUtc
+            })
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(expenses.Select(e => new
+        {
+            e.Id,
+            e.PropertyId,
+            e.ProjectId,
+            e.ProjectName,
+            e.TaskId,
+            e.TaskTitle,
+            e.Description,
+            e.Vendor,
+            e.VendorName,
+            e.Amount,
+            e.ExpenseDate,
+            e.Category,
+            e.Notes,
+            Attachments = attachments
+                .Where(a => a.EntityId == e.Id.ToString())
+                .ToList()
+        }));
+    }
+
+    private sealed record SaveExpenseRequest(
+        int PropertyId,
+        int? ProjectId,
+        int? TaskId,
+        string Description,
+        string? Vendor,
+        decimal Amount,
+        DateOnly? ExpenseDate,
+        string? Category,
+        string? Notes);
+
+    private static async Task<IResult> CreateExpenseAsync(
+        SaveExpenseRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var validation = await ValidateExpenseRequestAsync(request, db, cancellationToken);
+        if (validation.Result is not null) return validation.Result;
+
+        var expense = new Expense
+        {
+            PropertyId = request.PropertyId,
+            ProjectId = validation.ProjectId,
+            TaskId = request.TaskId,
+            Description = request.Description.Trim(),
+            Vendor = Clean(request.Vendor),
+            Amount = request.Amount,
+            ExpenseDate = request.ExpenseDate,
+            Category = Clean(request.Category),
+            Notes = Clean(request.Notes),
+            CreatedAt = DateTime.UtcNow
+        };
+
+        db.Expenses.Add(expense);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Created($"/api/home/expenses/{expense.Id}", new { expense.Id });
+    }
+
+    private static async Task<IResult> UpdateExpenseAsync(
+        int id,
+        SaveExpenseRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var expense = await db.Expenses
+            .FirstOrDefaultAsync(e => e.Id == id, cancellationToken);
+
+        if (expense is null)
+            return Results.NotFound();
+
+        var validation = await ValidateExpenseRequestAsync(request, db, cancellationToken);
+        if (validation.Result is not null) return validation.Result;
+
+        expense.PropertyId = request.PropertyId;
+        expense.ProjectId = validation.ProjectId;
+        expense.TaskId = request.TaskId;
+        expense.Description = request.Description.Trim();
+        expense.Vendor = Clean(request.Vendor);
+        expense.Amount = request.Amount;
+        expense.ExpenseDate = request.ExpenseDate;
+        expense.Category = Clean(request.Category);
+        expense.Notes = Clean(request.Notes);
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(new { expense.Id });
+    }
+
+    private static async Task<IResult> DeleteExpenseAsync(
+        int id,
+        HttpContext httpContext,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        IAttachmentStorageService storage,
+        CancellationToken cancellationToken)
+    {
+        var expense = await db.Expenses
+            .Include(e => e.Property)
+            .FirstOrDefaultAsync(e => e.Id == id, cancellationToken);
+
+        if (expense is null)
+            return Results.NotFound();
+
+        var householdId = expense.Property.HouseholdId;
+
+        var userId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!userId.HasValue)
+            return Results.Unauthorized();
+
+        var hasAccess = await platformDb.HouseholdMembers
+            .AnyAsync(
+                hm => hm.UserId == userId.Value && hm.HouseholdId == householdId,
+                cancellationToken);
+
+        if (!hasAccess)
+            return Results.NotFound();
+
+        var entityId = id.ToString();
+        var attachments = await platformDb.Attachments
+            .Where(a =>
+                a.IsActive &&
+                a.HouseholdId == householdId &&
+                a.App == "home" &&
+                a.EntityType == "Expense" &&
+                a.EntityId == entityId)
+            .ToListAsync(cancellationToken);
+
+        foreach (var attachment in attachments)
+        {
+            await storage.DeleteAsync(
+                AttachmentThumbnailHelper.GetThumbnailBlobName(attachment.BlobName),
+                cancellationToken);
+
+            await storage.DeleteAsync(
+                attachment.BlobName,
+                cancellationToken);
+        }
+
+        if (attachments.Count > 0)
+        {
+            platformDb.Attachments.RemoveRange(attachments);
+            await platformDb.SaveChangesAsync(cancellationToken);
+        }
+
+        db.Expenses.Remove(expense);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> UploadExpenseAttachmentAsync(
+        int id,
+        IFormFile file,
+        HttpContext httpContext,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        IAttachmentStorageService storage,
+        CancellationToken cancellationToken)
+    {
+        const long MaxUploadBytes = 20L * 1024L * 1024L;
+
+        if (file.Length <= 0)
+            return Results.BadRequest(new { message = "Choose a receipt or document to upload." });
+
+        if (file.Length > MaxUploadBytes)
+            return Results.BadRequest(new { message = "Files must be 20 MB or smaller." });
+
+        var isImage = file.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true;
+        var isPdf = string.Equals(file.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase);
+
+        if (!isImage && !isPdf)
+            return Results.BadRequest(new { message = "Expense attachments currently support images and PDF files." });
+
+        var expense = await db.Expenses
+            .AsNoTracking()
+            .Where(e => e.Id == id)
+            .Select(e => new
+            {
+                e.Id,
+                HouseholdId = e.Property.HouseholdId
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (expense is null)
+            return Results.NotFound();
+
+        var userId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!userId.HasValue)
+            return Results.Unauthorized();
+
+        var hasAccess = await platformDb.HouseholdMembers
+            .AnyAsync(
+                hm => hm.UserId == userId.Value && hm.HouseholdId == expense.HouseholdId,
+                cancellationToken);
+
+        if (!hasAccess)
+            return Results.NotFound();
+
+        StoredAttachment stored;
+        await using (var stream = file.OpenReadStream())
+        {
+            stored = await storage.UploadAsync(
+                expense.HouseholdId,
+                "home",
+                "expense-receipt",
+                Path.GetFileName(file.FileName),
+                file.ContentType ?? "application/octet-stream",
+                stream,
+                cancellationToken);
+        }
+
+        var attachment = new Attachment
+        {
+            HouseholdId = expense.HouseholdId,
+            UploadedByUserId = userId.Value,
+            App = "home",
+            Category = "expense-receipt",
+            EntityType = "Expense",
+            EntityId = id.ToString(),
+            FileName = Path.GetFileName(file.FileName),
+            ContentType = file.ContentType ?? "application/octet-stream",
+            BlobName = stored.BlobName,
+            FileSizeBytes = stored.FileSizeBytes,
+            UploadedUtc = DateTime.UtcNow,
+            IsActive = true
+        };
+
+        try
+        {
+            platformDb.Attachments.Add(attachment);
+            await platformDb.SaveChangesAsync(cancellationToken);
+        }
+        catch
+        {
+            await storage.DeleteAsync(stored.BlobName, cancellationToken);
+            throw;
+        }
+
+        if (isImage)
+        {
+            await AttachmentThumbnailHelper.EnsureCreatedAsync(
+                attachment.BlobName,
+                storage,
+                cancellationToken);
+        }
+
+        return Results.Created(
+            $"/api/attachments/{attachment.Id}",
+            new
+            {
+                attachment.Id,
+                attachment.FileName,
+                attachment.ContentType,
+                attachment.FileSizeBytes,
+                attachment.UploadedUtc
+            });
+    }
+
+    private sealed record ExpenseValidationResult(IResult? Result, int? ProjectId);
+
+    private static async Task<ExpenseValidationResult> ValidateExpenseRequestAsync(
+        SaveExpenseRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Description))
+            return new(Results.BadRequest(new { message = "Description is required." }), null);
+
+        if (request.Description.Trim().Length > 300)
+            return new(Results.BadRequest(new { message = "Description must be 300 characters or fewer." }), null);
+
+        if (request.Amount < 0)
+            return new(Results.BadRequest(new { message = "Amount cannot be negative." }), null);
+
+        if (request.Vendor?.Trim().Length > 200)
+            return new(Results.BadRequest(new { message = "Vendor must be 200 characters or fewer." }), null);
+
+        if (request.Category?.Trim().Length > 100)
+            return new(Results.BadRequest(new { message = "Category must be 100 characters or fewer." }), null);
+
+        var propertyExists = await db.Properties
+            .AnyAsync(p => p.Id == request.PropertyId, cancellationToken);
+
+        if (!propertyExists)
+            return new(Results.BadRequest(new { message = "Property was not found." }), null);
+
+        int? projectId = request.ProjectId;
+
+        if (request.ProjectId is not null)
+        {
+            var projectExists = await db.Projects.AnyAsync(
+                p => p.Id == request.ProjectId && p.PropertyId == request.PropertyId,
+                cancellationToken);
+
+            if (!projectExists)
+                return new(Results.BadRequest(new { message = "Selected project does not belong to this property." }), null);
+        }
+
+        if (request.TaskId is not null)
+        {
+            var task = await db.Tasks
+                .AsNoTracking()
+                .Where(t => t.Id == request.TaskId && t.PropertyId == request.PropertyId)
+                .Select(t => new { t.Id, t.ProjectId })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (task is null)
+                return new(Results.BadRequest(new { message = "Selected task does not belong to this property." }), null);
+
+            if (projectId is null)
+                projectId = task.ProjectId;
+            else if (task.ProjectId is not null && task.ProjectId != projectId)
+                return new(Results.BadRequest(new { message = "Selected task belongs to a different project." }), null);
+        }
+
+        return new(null, projectId);
+    }
+
     private static async Task<HashSet<int>> GetProjectScopeIdsAsync(
         int rootProjectId,
         int propertyId,
@@ -539,6 +940,7 @@ public static class HomeEndpoints
         int? ProjectId,
         string Title,
         string? Area,
+        List<string>? Areas,
         string? Status,
         string? Priority,
         bool ContractorNeeded,
@@ -565,7 +967,7 @@ public static class HomeEndpoints
             PropertyId = request.PropertyId,
             ProjectId = request.ProjectId,
             Title = request.Title.Trim(),
-            Area = Clean(request.Area),
+            Area = NormalizeAreaNames(request).FirstOrDefault(),
             Status = NormalizeStatus(request.Status),
             Priority = NormalizePriority(request.Priority),
             ContractorNeeded = request.ContractorNeeded,
@@ -581,6 +983,7 @@ public static class HomeEndpoints
             task.CompletedAt = DateTime.UtcNow;
 
         db.Tasks.Add(task);
+        await SetTaskAreasAsync(task, request, db, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
 
         return Results.Created($"/api/home/tasks/{task.Id}", new { task.Id });
@@ -592,7 +995,10 @@ public static class HomeEndpoints
         HomeExcursionDbContext db,
         CancellationToken cancellationToken)
     {
-        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken);
+        var task = await db.Tasks
+            .Include(t => t.TaskAreas)
+                .ThenInclude(ta => ta.Area)
+            .FirstOrDefaultAsync(t => t.Id == id, cancellationToken);
         if (task is null) return Results.NotFound();
 
         var validation = await ValidateTaskRequestAsync(request, db, cancellationToken);
@@ -604,7 +1010,7 @@ public static class HomeEndpoints
         task.PropertyId = request.PropertyId;
         task.ProjectId = request.ProjectId;
         task.Title = request.Title.Trim();
-        task.Area = Clean(request.Area);
+        task.Area = NormalizeAreaNames(request).FirstOrDefault();
         task.Status = newStatus;
         task.Priority = NormalizePriority(request.Priority);
         task.ContractorNeeded = request.ContractorNeeded;
@@ -612,6 +1018,8 @@ public static class HomeEndpoints
         task.EstimatedCost = request.EstimatedCost;
         task.TargetDate = request.TargetDate;
         task.Notes = Clean(request.Notes);
+
+        await SetTaskAreasAsync(task, request, db, cancellationToken);
 
         if (!string.Equals(oldStatus, "Complete", StringComparison.OrdinalIgnoreCase) &&
             string.Equals(newStatus, "Complete", StringComparison.OrdinalIgnoreCase))
@@ -678,8 +1086,13 @@ public static class HomeEndpoints
         if (request.Title.Trim().Length > 300)
             return Results.BadRequest(new { message = "Task title must be 300 characters or fewer." });
 
-        if (request.Area?.Trim().Length > 100)
-            return Results.BadRequest(new { message = "Area must be 100 characters or fewer." });
+        var areaNames = NormalizeAreaNames(request);
+
+        if (areaNames.Any(area => area.Length > 100))
+            return Results.BadRequest(new { message = "Each room / area must be 100 characters or fewer." });
+
+        if (areaNames.Count > 25)
+            return Results.BadRequest(new { message = "A task can have up to 25 rooms / areas." });
 
         if (request.EstimatedCost < 0)
             return Results.BadRequest(new { message = "Estimated cost cannot be negative." });
@@ -701,6 +1114,74 @@ public static class HomeEndpoints
         }
 
         return null;
+    }
+
+    private static List<string> NormalizeAreaNames(SaveTaskRequest request)
+    {
+        var values = request.Areas is { Count: > 0 }
+            ? request.Areas
+            : string.IsNullOrWhiteSpace(request.Area)
+                ? new List<string>()
+                : new List<string> { request.Area };
+
+        return values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static async Task SetTaskAreasAsync(
+        HomeTask task,
+        SaveTaskRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var names = NormalizeAreaNames(request);
+
+        if (task.TaskAreas.Count > 0)
+        {
+            db.TaskAreas.RemoveRange(task.TaskAreas);
+            task.TaskAreas.Clear();
+        }
+
+        if (names.Count == 0)
+        {
+            task.Area = null;
+            return;
+        }
+
+        var existingAreas = await db.Areas
+            .Where(a => a.PropertyId == request.PropertyId && names.Contains(a.Name))
+            .ToListAsync(cancellationToken);
+
+        foreach (var name in names)
+        {
+            var area = existingAreas.FirstOrDefault(a =>
+                string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
+
+            if (area is null)
+            {
+                area = new Area
+                {
+                    PropertyId = request.PropertyId,
+                    Name = name,
+                    CreatedAt = DateTime.UtcNow
+                };
+                db.Areas.Add(area);
+                existingAreas.Add(area);
+            }
+
+            task.TaskAreas.Add(new TaskArea
+            {
+                Task = task,
+                Area = area
+            });
+        }
+
+        // Keep the old Area column populated with the first value for now.
+        task.Area = names[0];
     }
 
     private static string NormalizeStatus(string? value) =>
