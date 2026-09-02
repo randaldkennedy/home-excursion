@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 env:
-  AZURE_WEBAPP_NAME: home-excursion
+  AZURE_WEBAPP_NAME: home-excursio
   PROJECT_PATH: HomeExcursion.Api/HomeExcursion.Api.csproj
   PUBLISH_PATH: ${{ github.workspace }}/publish
 
