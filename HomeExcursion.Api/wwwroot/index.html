@@ -4,19 +4,40 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Home Excursion</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="hero">
     <div class="hero-inner">
       <div>
-        <div class="eyebrow">LA ÚLTIMA EXCURSIÓN</div>
+        <a class="eyebrow home-link" href="https://laultimaexcursion.com/" title="Back to La Última Excursión">LA ÚLTIMA EXCURSIÓN</a>
         <h1>Home Excursion</h1>
         <p class="tagline">Prepare. Improve. Sell.</p>
       </div>
-      <div class="goal">
-        <span class="goal-label">THE GOAL</span>
-        <strong>Ready to List <span>→</span> Sold <span>→</span> Alaska</strong>
+
+      <div class="hero-actions">
+        <div class="goal">
+          <span class="goal-label">THE GOAL</span>
+          <strong>Ready to List <span>→</span> Sold <span>→</span> Alaska</strong>
+        </div>
+
+        <div id="accountMenu" class="account-menu">
+          <button id="accountButton" class="account-button" type="button" aria-expanded="false" aria-controls="accountPopover">
+            <span id="accountInitial" class="account-avatar">?</span>
+            <span id="accountName" class="account-name">Account</span>
+            <span class="account-caret" aria-hidden="true">▾</span>
+          </button>
+
+          <div id="accountPopover" class="account-popover" hidden>
+            <div class="account-identity">
+              <strong id="accountPopoverName">Signed in</strong>
+              <span id="accountEmail"></span>
+            </div>
+            <a class="account-link" href="https://laultimaexcursion.com/">← La Última Excursión</a>
+            <a class="account-link account-signout" href="/api/auth/logout">Sign out</a>
+          </div>
+        </div>
       </div>
     </div>
   </header>

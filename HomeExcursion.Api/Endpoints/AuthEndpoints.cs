@@ -111,8 +111,15 @@ public static class AuthEndpoints
         })
         .RequireAuthorization();
 
-        app.MapGet("/api/auth/logout", async (HttpContext httpContext) =>
+        app.MapGet("/api/auth/logout", async (
+            HttpContext httpContext,
+            IWebHostEnvironment environment) =>
         {
+            if (environment.IsDevelopment())
+            {
+                return Results.Redirect("/");
+            }
+
             await httpContext.SignOutAsync(
                 CookieAuthenticationDefaults.AuthenticationScheme);
 
@@ -122,6 +129,8 @@ public static class AuthEndpoints
                 {
                     RedirectUri = "https://laultimaexcursion.com"
                 });
+
+            return Results.Empty;
         })
         .RequireAuthorization();
 
