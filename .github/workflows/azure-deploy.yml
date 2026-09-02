@@ -42,6 +42,7 @@ jobs:
       - name: Apply Home database migrations
         env:
           HOME_CONNECTION_STRING: ${{ secrets.HOME_EXCURSION_CONNECTION_STRING }}
+          ConnectionStrings__HomeExcursion: ${{ secrets.HOME_EXCURSION_CONNECTION_STRING }}
         run: |
           dotnet ef database update `
             --project "${{ env.PROJECT_PATH }}" `
@@ -52,6 +53,7 @@ jobs:
       - name: Apply Platform database migrations
         env:
           HOME_CONNECTION_STRING: ${{ secrets.HOME_EXCURSION_CONNECTION_STRING }}
+          ConnectionStrings__HomeExcursion: ${{ secrets.HOME_EXCURSION_CONNECTION_STRING }}
         run: |
           dotnet ef database update `
             --project "${{ env.PROJECT_PATH }}" `
