@@ -74,9 +74,6 @@ if (app.Environment.IsDevelopment())
     await HomeSeedData.SeedAsync(homeDb, app.Environment);
 }
 
-app.UseDefaultFiles();
-app.UseStaticFiles();
-
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -95,6 +92,9 @@ if (!app.Environment.IsDevelopment())
         await next();
     });
 }
+
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 app.MapAuthEndpoints();
 app.MapAttachmentEndpoints();
