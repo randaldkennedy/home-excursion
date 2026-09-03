@@ -219,6 +219,11 @@
           <small>Photo or PDF · 20 MB max</small>
         </label>
 
+        <div id="quickReceiptAnalysisStatus" class="quick-receipt-note" hidden>
+          <strong>Reading receipt…</strong>
+          <span id="quickReceiptAnalysisMessage">AI is looking for vendor, date and totals.</span>
+        </div>
+
         <div class="quick-receipt-fields">
           <label class="field">
             <span>Vendor</span>
@@ -234,10 +239,22 @@
             <span>Date</span>
             <input id="quickReceiptDate" type="date" required>
           </label>
+
+          <label class="field">
+            <span>Subtotal</span>
+            <input id="quickReceiptSubtotal" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Optional">
+          </label>
+
+          <label class="field">
+            <span>Tax / fees</span>
+            <input id="quickReceiptTax" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Optional">
+          </label>
         </div>
 
+        <div id="quickReceiptAnalysisWarnings" class="quick-receipt-note" hidden></div>
+
         <div class="quick-receipt-note">
-          Saves as <strong>Unreviewed</strong> and <strong>Unassigned</strong>. It will not count toward Home Spent until you reconcile it.
+          AI fills what it can. Check the numbers before saving. The purchase still saves as <strong>Unreviewed</strong> and <strong>Unassigned</strong> and will not count toward Home Spent until you reconcile it.
         </div>
 
         <div id="quickReceiptDuplicateWarning" class="duplicate-warning quick-receipt-duplicate" hidden>

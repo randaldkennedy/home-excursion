@@ -2,6 +2,7 @@ using HomeExcursion.Api.Data;
 using HomeExcursion.Api.Endpoints;
 using HomeExcursion.Api.Services.Authentication;
 using HomeExcursion.Api.Services.Attachments;
+using HomeExcursion.Api.Services.Receipts;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.EntityFrameworkCore;
@@ -55,6 +56,8 @@ else
 }
 
 builder.Services.AddAuthorization();
+
+builder.Services.AddScoped<IHomeReceiptAnalyzer, AiHomeReceiptAnalyzer>();
 
 if (builder.Environment.IsDevelopment())
 {
@@ -111,6 +114,7 @@ if (!app.Environment.IsDevelopment())
 
 app.MapAuthEndpoints();
 app.MapAttachmentEndpoints();
+app.MapHomeReceiptAnalysisEndpoints();
 app.MapHomeEndpoints();
 
 app.Run();

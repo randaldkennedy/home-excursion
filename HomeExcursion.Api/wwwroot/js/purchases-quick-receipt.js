@@ -1,10 +1,10 @@
 function bindPurchaseEditor() {
   document.querySelector("#addPurchaseButton")?.addEventListener("click", () => openPurchaseDialog());
-  document.querySelectorAll("[data-quick-receipt]").forEach(button => button.addEventListener("click", openQuickReceiptDialog));
+  document.querySelector("#quickReceiptButton")?.addEventListener("click", openQuickReceiptDialog);
   document.querySelector("#closeQuickReceiptDialog")?.addEventListener("click", closeQuickReceiptDialog);
   document.querySelector("#cancelQuickReceiptButton")?.addEventListener("click", closeQuickReceiptDialog);
   document.querySelector("#quickReceiptForm")?.addEventListener("submit", saveQuickReceipt);
-  document.querySelector("#quickReceiptFile")?.addEventListener("change", updateQuickReceiptFileLabel);
+  document.querySelector("#quickReceiptFile")?.addEventListener("change", handleQuickReceiptFileSelection);
   document.querySelector("#saveQuickReceiptAnywayButton")?.addEventListener("click", () => saveQuickReceipt(null, true));
   document.querySelector("#quickReceiptDialog")?.addEventListener("click", event => {
     if (event.target === event.currentTarget) closeQuickReceiptDialog();
@@ -164,6 +164,7 @@ function openQuickReceiptDialog() {
   clearQuickReceiptError();
   hideQuickReceiptDuplicateWarning();
   updateQuickReceiptFileLabel();
+  resetQuickReceiptAnalysis();
   dialog.showModal();
 
   window.setTimeout(() => {
@@ -175,6 +176,7 @@ function closeQuickReceiptDialog() {
   document.querySelector("#quickReceiptDialog")?.close();
   clearQuickReceiptError();
   hideQuickReceiptDuplicateWarning();
+  resetQuickReceiptAnalysis();
 }
 
 function updateQuickReceiptFileLabel() {
@@ -191,6 +193,124 @@ function updateQuickReceiptFileLabel() {
   } else {
     label.textContent = "Take or choose receipt";
     picker?.classList.remove("has-file");
+  }
+}
+
+
+async function handleQuickReceiptFileSelection() {
+  updateQuickReceiptFileLabel();
+  clearQuickReceiptError();
+  hideQuickReceiptDuplicateWarning();
+
+  const file = document.querySelector("#quickReceiptFile")?.files?.[0];
+  if (!file) {
+    resetQuickReceiptAnalysis();
+    return;
+  }
+
+  const isSupportedImage = ["image/jpeg", "image/png", "image/webp"].includes(
+    String(file.type || "").toLowerCase());
+
+  if (!isSupportedImage) {
+    showQuickReceiptAnalysis(
+      "AI reading skipped",
+      "PDFs and this image type can still be saved, but automatic reading currently supports JPEG, PNG and WebP.",
+      []);
+    return;
+  }
+
+  showQuickReceiptAnalysis(
+    "Reading receipt…",
+    "AI is looking for vendor, date and totals.",
+    []);
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const response = await fetch("/api/home/receipt-analysis/analyze", {
+      method: "POST",
+      body: formData,
+      headers: { Accept: "application/json" }
+    });
+
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    const result = await response.json();
+
+    if (result.vendor) {
+      document.querySelector("#quickReceiptVendor").value = result.vendor;
+    }
+    if (result.purchaseDate) {
+      document.querySelector("#quickReceiptDate").value = result.purchaseDate;
+    }
+    if (result.total != null) {
+      document.querySelector("#quickReceiptTotal").value = Number(result.total).toFixed(2);
+    }
+    if (result.subtotal != null) {
+      document.querySelector("#quickReceiptSubtotal").value = Number(result.subtotal).toFixed(2);
+    }
+    if (result.tax != null) {
+      document.querySelector("#quickReceiptTax").value = Number(result.tax).toFixed(2);
+    }
+
+    const found = [
+      result.vendor ? "vendor" : null,
+      result.purchaseDate ? "date" : null,
+      result.total != null ? "total" : null,
+      result.subtotal != null ? "subtotal" : null,
+      result.tax != null ? "tax" : null
+    ].filter(Boolean);
+
+    showQuickReceiptAnalysis(
+      "Receipt read",
+      found.length
+        ? `Filled ${found.join(", ")}. Give it a quick look before saving.`
+        : "I could not confidently fill any fields. Enter them manually.",
+      result.warnings || []);
+
+    document.querySelector("#quickReceiptTotal")?.focus();
+  } catch (error) {
+    console.error(error);
+    showQuickReceiptAnalysis(
+      "Could not read receipt",
+      error.message || "AI analysis failed. You can still enter the receipt manually.",
+      []);
+  }
+}
+
+function showQuickReceiptAnalysis(title, message, warnings) {
+  const status = document.querySelector("#quickReceiptAnalysisStatus");
+  const messageElement = document.querySelector("#quickReceiptAnalysisMessage");
+  const warningBox = document.querySelector("#quickReceiptAnalysisWarnings");
+
+  if (status) {
+    const strong = status.querySelector("strong");
+    if (strong) strong.textContent = title;
+    if (messageElement) messageElement.textContent = message;
+    status.hidden = false;
+  }
+
+  if (warningBox) {
+    if (warnings?.length) {
+      warningBox.innerHTML = `<strong>Check this:</strong> ${warnings.map(w => escapeHtml(w)).join(" · ")}`;
+      warningBox.hidden = false;
+    } else {
+      warningBox.innerHTML = "";
+      warningBox.hidden = true;
+    }
+  }
+}
+
+function resetQuickReceiptAnalysis() {
+  const status = document.querySelector("#quickReceiptAnalysisStatus");
+  const warningBox = document.querySelector("#quickReceiptAnalysisWarnings");
+  if (status) status.hidden = true;
+  if (warningBox) {
+    warningBox.hidden = true;
+    warningBox.innerHTML = "";
   }
 }
 
@@ -215,6 +335,8 @@ async function saveQuickReceipt(event, allowPossibleDuplicate = false) {
   const file = document.querySelector("#quickReceiptFile")?.files?.[0];
   const vendor = document.querySelector("#quickReceiptVendor")?.value?.trim() || "";
   const total = document.querySelector("#quickReceiptTotal")?.value || "";
+  const subtotal = document.querySelector("#quickReceiptSubtotal")?.value || "";
+  const tax = document.querySelector("#quickReceiptTax")?.value || "";
   const purchaseDate = document.querySelector("#quickReceiptDate")?.value || "";
 
   if (!file) {
@@ -232,6 +354,8 @@ async function saveQuickReceipt(event, allowPossibleDuplicate = false) {
   formData.append("file", file);
   formData.append("vendor", vendor);
   formData.append("total", total);
+  formData.append("subtotal", subtotal);
+  formData.append("tax", tax);
   formData.append("purchaseDate", purchaseDate);
   formData.append("allowPossibleDuplicate", String(Boolean(allowPossibleDuplicate)));
 

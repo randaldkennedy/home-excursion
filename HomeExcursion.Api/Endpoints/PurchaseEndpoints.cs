@@ -237,6 +237,40 @@ public static class PurchaseEndpoints
             return Results.BadRequest(new { message = "Enter a receipt total greater than zero." });
         }
 
+        decimal? subtotal = null;
+        var subtotalText = form["subtotal"].ToString();
+        if (!string.IsNullOrWhiteSpace(subtotalText))
+        {
+            if (!decimal.TryParse(
+                    subtotalText,
+                    NumberStyles.Number,
+                    CultureInfo.InvariantCulture,
+                    out var parsedSubtotal) ||
+                parsedSubtotal < 0)
+            {
+                return Results.BadRequest(new { message = "Subtotal is invalid." });
+            }
+
+            subtotal = parsedSubtotal;
+        }
+
+        decimal? tax = null;
+        var taxText = form["tax"].ToString();
+        if (!string.IsNullOrWhiteSpace(taxText))
+        {
+            if (!decimal.TryParse(
+                    taxText,
+                    NumberStyles.Number,
+                    CultureInfo.InvariantCulture,
+                    out var parsedTax) ||
+                parsedTax < 0)
+            {
+                return Results.BadRequest(new { message = "Tax / fees is invalid." });
+            }
+
+            tax = parsedTax;
+        }
+
         DateOnly? purchaseDate = null;
         var purchaseDateText = form["purchaseDate"].ToString();
         if (!string.IsNullOrWhiteSpace(purchaseDateText))
@@ -312,6 +346,8 @@ public static class PurchaseEndpoints
             PropertyId = property.Id,
             Vendor = vendor,
             PurchaseDate = purchaseDate,
+            Subtotal = subtotal,
+            Tax = tax,
             Total = total,
             Status = "Unreviewed",
             Source = "Quick Receipt",
