@@ -77,24 +77,37 @@ if (app.Environment.IsDevelopment())
 app.UseAuthentication();
 app.UseAuthorization();
 
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 if (!app.Environment.IsDevelopment())
 {
-    app.Use(async (context, next) =>
+    app.MapGet("/", async (HttpContext context) =>
     {
-        if ((context.Request.Path == "/" ||
-             context.Request.Path == "/index.html") &&
-            !(context.User.Identity?.IsAuthenticated ?? false))
+        if (!(context.User.Identity?.IsAuthenticated ?? false))
         {
             await context.ChallengeAsync();
             return;
         }
 
-        await next();
+        context.Response.ContentType = "text/html";
+        await context.Response.SendFileAsync(
+            Path.Combine(app.Environment.WebRootPath, "index.html"));
+    });
+
+    app.MapGet("/index.html", async (HttpContext context) =>
+    {
+        if (!(context.User.Identity?.IsAuthenticated ?? false))
+        {
+            await context.ChallengeAsync();
+            return;
+        }
+
+        context.Response.ContentType = "text/html";
+        await context.Response.SendFileAsync(
+            Path.Combine(app.Environment.WebRootPath, "index.html"));
     });
 }
-
-app.UseDefaultFiles();
-app.UseStaticFiles();
 
 app.MapAuthEndpoints();
 app.MapAttachmentEndpoints();
