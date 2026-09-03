@@ -1,6 +1,6 @@
 function bindPurchaseEditor() {
   document.querySelector("#addPurchaseButton")?.addEventListener("click", () => openPurchaseDialog());
-  document.querySelector("#quickReceiptButton")?.addEventListener("click", openQuickReceiptDialog);
+  document.querySelectorAll("[data-quick-receipt]").forEach(button => button.addEventListener("click", openQuickReceiptDialog));
   document.querySelector("#closeQuickReceiptDialog")?.addEventListener("click", closeQuickReceiptDialog);
   document.querySelector("#cancelQuickReceiptButton")?.addEventListener("click", closeQuickReceiptDialog);
   document.querySelector("#quickReceiptForm")?.addEventListener("submit", saveQuickReceipt);

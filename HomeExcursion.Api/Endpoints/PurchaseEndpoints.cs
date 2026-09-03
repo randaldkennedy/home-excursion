@@ -1,3 +1,4 @@
+using System.Globalization;
 using HomeExcursion.Api.Data;
 using HomeExcursion.Api.Models;
 using HomeExcursion.Api.Services.Attachments;
@@ -15,6 +16,8 @@ public static class PurchaseEndpoints
         group.MapGet("/purchases", GetPurchasesAsync);
         group.MapGet("/purchases/{id:int}", GetPurchaseAsync);
         group.MapPost("/purchases", CreatePurchaseAsync);
+        group.MapPost("/purchases/quick-receipt", CreateQuickReceiptAsync)
+            .DisableAntiforgery();
         group.MapPut("/purchases/{id:int}", UpdatePurchaseAsync);
         group.MapPost("/purchases/{id:int}/verify", VerifyPurchaseAsync);
         group.MapDelete("/purchases/{id:int}", DeletePurchaseAsync);
@@ -192,6 +195,218 @@ public static class PurchaseEndpoints
                 }),
             Attachments = attachments
         };
+    }
+
+    private static async Task<IResult> CreateQuickReceiptAsync(
+        HttpRequest request,
+        HttpContext httpContext,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        IAttachmentStorageService storage,
+        CancellationToken cancellationToken)
+    {
+        if (!request.HasFormContentType)
+            return Results.BadRequest(new { message = "Quick Receipt requires form data." });
+
+        var form = await request.ReadFormAsync(cancellationToken);
+        var file = form.Files.GetFile("file");
+
+        if (file is null || file.Length <= 0)
+            return Results.BadRequest(new { message = "Take or choose a receipt photo first." });
+
+        const long MaxUploadBytes = 20L * 1024L * 1024L;
+        if (file.Length > MaxUploadBytes)
+            return Results.BadRequest(new { message = "Receipt images must be 20 MB or smaller." });
+
+        var isImage = file.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true;
+        var isPdf = string.Equals(file.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase);
+        if (!isImage && !isPdf)
+            return Results.BadRequest(new { message = "Quick Receipt supports images and PDF files." });
+
+        var vendor = Clean(form["vendor"].ToString());
+        if (vendor?.Length > 200)
+            return Results.BadRequest(new { message = "Vendor must be 200 characters or fewer." });
+
+        if (!decimal.TryParse(
+                form["total"].ToString(),
+                NumberStyles.Number,
+                CultureInfo.InvariantCulture,
+                out var total) ||
+            total <= 0)
+        {
+            return Results.BadRequest(new { message = "Enter a receipt total greater than zero." });
+        }
+
+        DateOnly? purchaseDate = null;
+        var purchaseDateText = form["purchaseDate"].ToString();
+        if (!string.IsNullOrWhiteSpace(purchaseDateText))
+        {
+            if (!DateOnly.TryParseExact(
+                    purchaseDateText,
+                    "yyyy-MM-dd",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out var parsedDate))
+            {
+                return Results.BadRequest(new { message = "Purchase date is invalid." });
+            }
+
+            purchaseDate = parsedDate;
+        }
+
+        var allowPossibleDuplicate =
+            bool.TryParse(form["allowPossibleDuplicate"].ToString(), out var allowDuplicate) &&
+            allowDuplicate;
+
+        var property = await db.Properties
+            .AsNoTracking()
+            .Where(p => p.IsActive)
+            .OrderBy(p => p.Id)
+            .Select(p => new { p.Id, p.HouseholdId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (property is null)
+            return Results.NotFound(new { message = "No active Home Excursion property was found." });
+
+        var userId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!userId.HasValue)
+            return Results.Unauthorized();
+
+        var hasAccess = await platformDb.HouseholdMembers.AnyAsync(
+            hm => hm.UserId == userId.Value && hm.HouseholdId == property.HouseholdId,
+            cancellationToken);
+
+        if (!hasAccess)
+            return Results.NotFound();
+
+        var duplicateRequest = new SavePurchaseRequest(
+            property.Id,
+            null,
+            vendor,
+            purchaseDate,
+            null,
+            null,
+            total,
+            null,
+            allowPossibleDuplicate,
+            null);
+
+        var duplicateCandidates = await FindDuplicateCandidatesAsync(
+            duplicateRequest,
+            null,
+            db,
+            cancellationToken);
+
+        if (duplicateCandidates.Count > 0 && !allowPossibleDuplicate)
+        {
+            return Results.Conflict(new
+            {
+                message = "This looks like a receipt that may already be in Home Excursion.",
+                possibleDuplicate = true,
+                duplicates = duplicateCandidates
+            });
+        }
+
+        var purchase = new Purchase
+        {
+            PropertyId = property.Id,
+            Vendor = vendor,
+            PurchaseDate = purchaseDate,
+            Total = total,
+            Status = "Unreviewed",
+            Source = "Quick Receipt",
+            CreatedAt = DateTime.UtcNow
+        };
+
+        purchase.Allocations.Add(new PurchaseAllocation
+        {
+            Amount = total,
+            Description = "Quick Receipt — unassigned",
+            AllocationType = "Unassigned",
+            IsIncludedInHomeSpend = false,
+            SuggestedBy = "User",
+            IsVerified = false,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        db.Purchases.Add(purchase);
+        await db.SaveChangesAsync(cancellationToken);
+
+        StoredAttachment? stored = null;
+        Attachment? attachment = null;
+
+        try
+        {
+            await using (var stream = file.OpenReadStream())
+            {
+                stored = await storage.UploadAsync(
+                    property.HouseholdId,
+                    "home",
+                    "purchase-receipt",
+                    Path.GetFileName(file.FileName),
+                    file.ContentType ?? "application/octet-stream",
+                    stream,
+                    cancellationToken);
+            }
+
+            attachment = new Attachment
+            {
+                HouseholdId = property.HouseholdId,
+                UploadedByUserId = userId.Value,
+                App = "home",
+                Category = "purchase-receipt",
+                EntityType = "Purchase",
+                EntityId = purchase.Id.ToString(),
+                FileName = Path.GetFileName(file.FileName),
+                ContentType = file.ContentType ?? "application/octet-stream",
+                BlobName = stored.BlobName,
+                FileSizeBytes = stored.FileSizeBytes,
+                UploadedUtc = DateTime.UtcNow,
+                IsActive = true
+            };
+
+            platformDb.Attachments.Add(attachment);
+            await platformDb.SaveChangesAsync(cancellationToken);
+
+            if (isImage)
+            {
+                await AttachmentThumbnailHelper.EnsureCreatedAsync(
+                    attachment.BlobName,
+                    storage,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+            if (attachment is not null && attachment.Id > 0)
+            {
+                platformDb.Attachments.Remove(attachment);
+                await platformDb.SaveChangesAsync(cancellationToken);
+            }
+
+            if (stored is not null)
+            {
+                await storage.DeleteAsync(
+                    AttachmentThumbnailHelper.GetThumbnailBlobName(stored.BlobName),
+                    cancellationToken);
+                await storage.DeleteAsync(stored.BlobName, cancellationToken);
+            }
+
+            db.Purchases.Remove(purchase);
+            await db.SaveChangesAsync(cancellationToken);
+
+            throw;
+        }
+
+        return Results.Created(
+            $"/api/home/purchases/{purchase.Id}",
+            new
+            {
+                purchase.Id,
+                purchase.Status,
+                purchase.Source,
+                AttachmentId = attachment!.Id
+            });
     }
 
     private static async Task<IResult> CreatePurchaseAsync(

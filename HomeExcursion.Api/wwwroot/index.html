@@ -60,6 +60,15 @@
       </div>
     </section>
 
+    <section class="quick-action-strip" aria-label="Quick actions">
+      <div class="quick-action-copy">
+        <span class="section-kicker">OUT IN THE WILD?</span>
+        <strong>Got a receipt? Capture it now.</strong>
+        <small>Take the picture. Add vendor and total. Reconcile it later.</small>
+      </div>
+      <button class="quick-receipt-btn quick-receipt-hero-btn" type="button" data-quick-receipt onclick="openQuickReceiptDialog()">📷 Quick Receipt</button>
+    </section>
+
     <section class="summary-grid" aria-label="Project summary">
       <article id="spentSummaryCard" class="summary-card summary-card-link" role="button" tabindex="0" aria-label="View expenses">
   <span class="summary-label">Spent</span>
@@ -131,7 +140,10 @@
     <section class="panel purchases-panel">
       <div class="panel-heading expenses-heading">
         <div><span class="section-kicker">MONEY OUT</span><h2>Receipts / Purchases</h2></div>
-        <button id="addPurchaseButton" class="primary-btn">+ Add purchase</button>
+        <div class="purchase-heading-actions">
+          <button class="quick-receipt-btn" type="button" data-quick-receipt onclick="openQuickReceiptDialog()">📷 Quick Receipt</button>
+          <button id="addPurchaseButton" class="primary-btn" type="button">+ Add purchase</button>
+        </div>
       </div>
       <div class="expense-toolbar">
         <input id="purchaseSearch" class="expense-search" type="search" placeholder="Search vendor, allocation, task, project…">
@@ -186,6 +198,65 @@
         <img id="imageViewerImage" alt="">
       </div>
     </div>
+  </dialog>
+
+
+  <dialog id="quickReceiptDialog" class="modal quick-receipt-modal">
+    <form id="quickReceiptForm" class="modal-card quick-receipt-card">
+      <div class="modal-head">
+        <div>
+          <span class="section-kicker">CAPTURE NOW · SORT OUT LATER</span>
+          <h2>Quick Receipt</h2>
+        </div>
+        <button type="button" class="icon-btn" id="closeQuickReceiptDialog" aria-label="Close">×</button>
+      </div>
+
+      <div class="quick-receipt-body">
+        <label class="quick-receipt-photo">
+          <input id="quickReceiptFile" type="file" accept="image/*,application/pdf" capture="environment" hidden>
+          <span class="quick-receipt-camera">📷</span>
+          <strong id="quickReceiptFileLabel">Take or choose receipt</strong>
+          <small>Photo or PDF · 20 MB max</small>
+        </label>
+
+        <div class="quick-receipt-fields">
+          <label class="field">
+            <span>Vendor</span>
+            <input id="quickReceiptVendor" maxlength="200" autocomplete="organization" placeholder="Home Depot">
+          </label>
+
+          <label class="field">
+            <span>Total</span>
+            <input id="quickReceiptTotal" type="number" min="0.01" step="0.01" inputmode="decimal" required placeholder="0.00">
+          </label>
+
+          <label class="field">
+            <span>Date</span>
+            <input id="quickReceiptDate" type="date" required>
+          </label>
+        </div>
+
+        <div class="quick-receipt-note">
+          Saves as <strong>Unreviewed</strong> and <strong>Unassigned</strong>. It will not count toward Home Spent until you reconcile it.
+        </div>
+
+        <div id="quickReceiptDuplicateWarning" class="duplicate-warning quick-receipt-duplicate" hidden>
+          <strong>Possible duplicate</strong>
+          <p>This looks like a receipt already in Home Excursion.</p>
+          <div id="quickReceiptDuplicateList"></div>
+        </div>
+
+        <div id="quickReceiptError" class="form-error quick-receipt-error" hidden></div>
+      </div>
+
+      <div class="modal-actions quick-receipt-actions">
+        <button type="button" id="cancelQuickReceiptButton" class="secondary-btn">Cancel</button>
+        <div class="modal-actions-right">
+          <button type="button" id="saveQuickReceiptAnywayButton" class="secondary-btn" hidden>Save anyway</button>
+          <button type="submit" id="saveQuickReceiptButton" class="primary-btn">Save receipt</button>
+        </div>
+      </div>
+    </form>
   </dialog>
 
   <dialog id="purchaseDialog" class="modal purchase-modal">
