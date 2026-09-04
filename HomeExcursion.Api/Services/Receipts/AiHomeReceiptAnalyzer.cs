@@ -67,6 +67,15 @@ public sealed class AiHomeReceiptAnalyzer : IHomeReceiptAnalyzer
             - Prefer a clearly labeled TOTAL, AMOUNT PAID, BALANCE PAID, or equivalent.
             - Do not confuse change due, cash tendered, card number, authorization
               codes, loyalty totals, rewards, or savings with the transaction total.
+            - lineItems: extract each purchased product/service line that can be read
+              confidently. Do not include subtotal, tax, total, payment tender, savings,
+              rewards, or change due as line items.
+            - lineItems.description: human-readable item/service description from the receipt.
+            - lineItems.quantity: purchased quantity when clearly shown; otherwise null.
+            - lineItems.unitPrice: per-unit price when clearly shown; otherwise null.
+            - lineItems.lineTotal: extended amount for that purchased line when clearly shown.
+            - Do not invent expanded product names from SKU/UPC codes when the printed
+              description is unclear. Preserve useful printed wording instead.
             - rawText: useful readable text from the receipt, concise but sufficient
               for troubleshooting extraction.
             - Use null for any field that cannot be read confidently.
@@ -123,6 +132,40 @@ public sealed class AiHomeReceiptAnalyzer : IHomeReceiptAnalyzer
                             { "type": "null" }
                           ]
                         },
+                        "lineItems": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "description": {
+                                "anyOf": [
+                                  { "type": "string" },
+                                  { "type": "null" }
+                                ]
+                              },
+                              "quantity": {
+                                "anyOf": [
+                                  { "type": "number" },
+                                  { "type": "null" }
+                                ]
+                              },
+                              "unitPrice": {
+                                "anyOf": [
+                                  { "type": "number" },
+                                  { "type": "null" }
+                                ]
+                              },
+                              "lineTotal": {
+                                "anyOf": [
+                                  { "type": "number" },
+                                  { "type": "null" }
+                                ]
+                              }
+                            },
+                            "required": ["description","quantity","unitPrice","lineTotal"],
+                            "additionalProperties": false
+                          }
+                        },
                         "rawText": {
                           "anyOf": [
                             { "type": "string" },
@@ -140,6 +183,7 @@ public sealed class AiHomeReceiptAnalyzer : IHomeReceiptAnalyzer
                         "subtotal",
                         "tax",
                         "total",
+                        "lineItems",
                         "rawText",
                         "warnings"
                       ],
@@ -186,6 +230,18 @@ public sealed class AiHomeReceiptAnalyzer : IHomeReceiptAnalyzer
             Subtotal = NormalizeMoney(payload.Subtotal),
             Tax = NormalizeMoney(payload.Tax),
             Total = NormalizeMoney(payload.Total),
+            LineItems = (payload.LineItems ?? [])
+                .Where(item =>
+                    !string.IsNullOrWhiteSpace(item.Description) ||
+                    item.LineTotal.HasValue)
+                .Select(item => new HomeReceiptLineItem
+                {
+                    Description = Clean(item.Description),
+                    Quantity = item.Quantity,
+                    UnitPrice = NormalizeMoney(item.UnitPrice),
+                    LineTotal = NormalizeMoney(item.LineTotal)
+                })
+                .ToList(),
             RawText = Clean(payload.RawText),
             Warnings = payload.Warnings ?? []
         };
@@ -204,7 +260,16 @@ public sealed class AiHomeReceiptAnalyzer : IHomeReceiptAnalyzer
         public decimal? Subtotal { get; set; }
         public decimal? Tax { get; set; }
         public decimal? Total { get; set; }
+        public List<AiLineItem>? LineItems { get; set; }
         public string? RawText { get; set; }
         public List<string>? Warnings { get; set; }
+    }
+
+    private sealed class AiLineItem
+    {
+        public string? Description { get; set; }
+        public decimal? Quantity { get; set; }
+        public decimal? UnitPrice { get; set; }
+        public decimal? LineTotal { get; set; }
     }
 }

@@ -150,11 +150,15 @@
         <select id="purchaseStatusFilter" class="sort-select" aria-label="Filter purchases">
           <option value="">All receipts</option><option value="Needs Review">Needs review</option><option value="Unreviewed">Unreviewed</option><option value="Unassigned">Unassigned</option><option value="Verified">Verified</option>
         </select>
-        <select id="purchaseSort" class="sort-select" aria-label="Sort purchases">
-          <option value="newest" selected>Newest first</option><option value="oldest">Oldest first</option><option value="highest">Highest amount</option><option value="lowest">Lowest amount</option>
-        </select>
       </div>
-      <div class="expense-summary-line"><span id="purchaseStats">Loading purchases…</span><span>Click a receipt to reconcile it.</span></div>
+      <div class="expense-summary-line">
+        <span id="purchaseStats">Loading purchases…</span>
+        <span>Click a receipt to reconcile it.</span>
+      </div>
+      <div id="purchaseBulkActions" class="purchase-bulk-actions" hidden>
+        <strong id="purchaseSelectedCount">0 selected</strong>
+        <button id="deleteSelectedPurchasesButton" type="button" class="danger-btn">🗑 Delete selected</button>
+      </div>
       <div id="purchases" class="purchases-list"><div class="loading">Loading purchases…</div></div>
     </section>
   </main>
@@ -250,6 +254,17 @@
             <input id="quickReceiptTax" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Optional">
           </label>
         </div>
+
+        <section id="quickReceiptLineItemsSection" class="quick-receipt-line-items" hidden>
+          <div class="quick-receipt-line-items-head">
+            <div>
+              <span class="field-section-label">Items read from receipt</span>
+              <strong id="quickReceiptLineItemsCount">0 items</strong>
+            </div>
+            <small>Edit a name once and Home will remember it.</small>
+          </div>
+          <div id="quickReceiptLineItems" class="quick-receipt-line-items-list"></div>
+        </section>
 
         <div id="quickReceiptAnalysisWarnings" class="quick-receipt-note" hidden></div>
 

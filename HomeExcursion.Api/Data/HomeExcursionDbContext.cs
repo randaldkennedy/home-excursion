@@ -20,6 +20,7 @@ public class HomeExcursionDbContext : DbContext
     public DbSet<TaskArea> TaskAreas => Set<TaskArea>();
     public DbSet<Purchase> Purchases => Set<Purchase>();
     public DbSet<PurchaseAllocation> PurchaseAllocations => Set<PurchaseAllocation>();
+    public DbSet<PurchaseItemAlias> PurchaseItemAliases => Set<PurchaseItemAlias>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -232,6 +233,27 @@ public class HomeExcursionDbContext : DbContext
                 .IsUnique()
                 .HasFilter("[LegacyExpenseId] IS NOT NULL");
         });
+
+        modelBuilder.Entity<PurchaseItemAlias>(entity =>
+        {
+            entity.ToTable("PurchaseItemAliases");
+
+            entity.Property(a => a.ReceiptText)
+                .HasMaxLength(300)
+                .IsRequired();
+
+            entity.Property(a => a.NormalizedReceiptText)
+                .HasMaxLength(300)
+                .IsRequired();
+
+            entity.Property(a => a.DisplayName)
+                .HasMaxLength(300)
+                .IsRequired();
+
+            entity.HasIndex(a => new { a.HouseholdId, a.NormalizedReceiptText })
+                .IsUnique();
+        });
+
 
         modelBuilder.Entity<PurchaseAllocation>(entity =>
         {

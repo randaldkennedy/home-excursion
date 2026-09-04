@@ -65,6 +65,23 @@ public static class AttachmentEndpoints
                     "image/",
                     StringComparison.OrdinalIgnoreCase) == true;
 
+            var isPdf =
+                string.Equals(
+                    attachment.ContentType,
+                    "application/pdf",
+                    StringComparison.OrdinalIgnoreCase);
+
+            if (isPdf)
+            {
+                httpContext.Response.Headers.ContentDisposition =
+                    $"inline; filename=\"{attachment.FileName.Replace("\"", string.Empty)}\"";
+
+                return Results.File(
+                    download.Content,
+                    attachment.ContentType,
+                    enableRangeProcessing: true);
+            }
+
             return isImage
                 ? Results.File(
                     download.Content,

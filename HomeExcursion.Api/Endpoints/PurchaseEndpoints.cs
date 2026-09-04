@@ -18,9 +18,12 @@ public static class PurchaseEndpoints
         group.MapPost("/purchases", CreatePurchaseAsync);
         group.MapPost("/purchases/quick-receipt", CreateQuickReceiptAsync)
             .DisableAntiforgery();
+        group.MapPost("/purchases/item-aliases/resolve", ResolvePurchaseItemAliasesAsync);
+        group.MapPut("/purchases/item-aliases", SavePurchaseItemAliasAsync);
         group.MapPut("/purchases/{id:int}", UpdatePurchaseAsync);
         group.MapPost("/purchases/{id:int}/verify", VerifyPurchaseAsync);
         group.MapDelete("/purchases/{id:int}", DeletePurchaseAsync);
+        group.MapPost("/purchases/bulk-delete", BulkDeletePurchasesAsync);
         group.MapPost("/purchases/{id:int}/attachments", UploadPurchaseAttachmentAsync)
             .DisableAntiforgery();
 
@@ -37,6 +40,16 @@ public static class PurchaseEndpoints
         string? AllocationType,
         bool? IsIncludedInHomeSpend,
         string? Notes);
+
+    private sealed record ResolvePurchaseItemAliasesRequest(
+        List<string>? ReceiptTexts);
+
+    private sealed record SavePurchaseItemAliasRequest(
+        string ReceiptText,
+        string DisplayName);
+
+    private sealed record BulkDeletePurchasesRequest(
+        List<int>? PurchaseIds);
 
     private sealed record SavePurchaseRequest(
         int PropertyId,
@@ -174,6 +187,7 @@ public static class PurchaseEndpoints
             Excluded = excluded,
             Difference = p.Total - allocated,
             HasUnassigned = p.Allocations.Any(a => a.AllocationType == "Unassigned"),
+            CanBulkDelete = !p.Allocations.Any(a => a.ProjectId != null || a.TaskId != null),
             Allocations = p.Allocations
                 .OrderBy(a => a.Id)
                 .Select(a => new
@@ -195,6 +209,172 @@ public static class PurchaseEndpoints
                 }),
             Attachments = attachments
         };
+    }
+
+    private static async Task<IResult> ResolvePurchaseItemAliasesAsync(
+        ResolvePurchaseItemAliasesRequest request,
+        HttpContext httpContext,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        CancellationToken cancellationToken)
+    {
+        var property = await db.Properties
+            .AsNoTracking()
+            .Where(p => p.IsActive)
+            .OrderBy(p => p.Id)
+            .Select(p => new { p.Id, p.HouseholdId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (property is null)
+            return Results.NotFound(new { message = "No active Home Excursion property was found." });
+
+        var userId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!userId.HasValue)
+            return Results.Unauthorized();
+
+        var hasAccess = await platformDb.HouseholdMembers.AnyAsync(
+            hm => hm.UserId == userId.Value && hm.HouseholdId == property.HouseholdId,
+            cancellationToken);
+
+        if (!hasAccess)
+            return Results.NotFound();
+
+        var requested = (request.ReceiptTexts ?? [])
+            .Select(text => Clean(text))
+            .Where(text => !string.IsNullOrWhiteSpace(text))
+            .Select(text => text!)
+            .Where(text => text.Length <= 300)
+            .Take(100)
+            .Select(text => new
+            {
+                ReceiptText = text,
+                Normalized = NormalizeReceiptItemText(text)
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item.Normalized))
+            .GroupBy(item => item.Normalized, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+
+        if (requested.Count == 0)
+            return Results.Ok(new { aliases = Array.Empty<object>() });
+
+        var normalizedValues = requested
+            .Select(item => item.Normalized)
+            .ToList();
+
+        var aliases = await db.PurchaseItemAliases
+            .AsNoTracking()
+            .Where(a =>
+                a.HouseholdId == property.HouseholdId &&
+                normalizedValues.Contains(a.NormalizedReceiptText))
+            .Select(a => new
+            {
+                a.ReceiptText,
+                a.NormalizedReceiptText,
+                a.DisplayName
+            })
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(new { aliases });
+    }
+
+    private static async Task<IResult> SavePurchaseItemAliasAsync(
+        SavePurchaseItemAliasRequest request,
+        HttpContext httpContext,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        CancellationToken cancellationToken)
+    {
+        var receiptText = Clean(request.ReceiptText);
+        var displayName = Clean(request.DisplayName);
+
+        if (receiptText is null)
+            return Results.BadRequest(new { message = "Receipt text is required." });
+
+        if (displayName is null)
+            return Results.BadRequest(new { message = "Display name is required." });
+
+        if (receiptText.Length > 300 || displayName.Length > 300)
+            return Results.BadRequest(new { message = "Item names must be 300 characters or fewer." });
+
+        var normalized = NormalizeReceiptItemText(receiptText);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return Results.BadRequest(new { message = "Receipt text is invalid." });
+
+        var property = await db.Properties
+            .AsNoTracking()
+            .Where(p => p.IsActive)
+            .OrderBy(p => p.Id)
+            .Select(p => new { p.Id, p.HouseholdId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (property is null)
+            return Results.NotFound(new { message = "No active Home Excursion property was found." });
+
+        var userId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!userId.HasValue)
+            return Results.Unauthorized();
+
+        var hasAccess = await platformDb.HouseholdMembers.AnyAsync(
+            hm => hm.UserId == userId.Value && hm.HouseholdId == property.HouseholdId,
+            cancellationToken);
+
+        if (!hasAccess)
+            return Results.NotFound();
+
+        var existing = await db.PurchaseItemAliases
+            .SingleOrDefaultAsync(
+                a => a.HouseholdId == property.HouseholdId &&
+                     a.NormalizedReceiptText == normalized,
+                cancellationToken);
+
+        // If the edited name is effectively the same as the receipt text,
+        // remove any old alias and fall back to the raw receipt wording.
+        if (NormalizeReceiptItemText(displayName) == normalized)
+        {
+            if (existing is not null)
+            {
+                db.PurchaseItemAliases.Remove(existing);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            return Results.Ok(new
+            {
+                receiptText,
+                displayName = receiptText,
+                remembered = false
+            });
+        }
+
+        if (existing is null)
+        {
+            existing = new PurchaseItemAlias
+            {
+                HouseholdId = property.HouseholdId,
+                ReceiptText = receiptText,
+                NormalizedReceiptText = normalized,
+                DisplayName = displayName,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            db.PurchaseItemAliases.Add(existing);
+        }
+        else
+        {
+            existing.ReceiptText = receiptText;
+            existing.DisplayName = displayName;
+            existing.UpdatedAt = DateTime.UtcNow;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Ok(new
+        {
+            existing.ReceiptText,
+            existing.DisplayName,
+            remembered = true
+        });
     }
 
     private static async Task<IResult> CreateQuickReceiptAsync(
@@ -577,6 +757,7 @@ public static class PurchaseEndpoints
     {
         var purchase = await db.Purchases
             .Include(p => p.Property)
+            .Include(p => p.Allocations)
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
 
         if (purchase is null) return Results.NotFound();
@@ -589,19 +770,122 @@ public static class PurchaseEndpoints
             cancellationToken);
         if (!hasAccess) return Results.NotFound();
 
-        var entityId = id.ToString();
+        if (purchase.Allocations.Any(a => a.ProjectId != null || a.TaskId != null))
+        {
+            return Results.Conflict(new
+            {
+                message = "This purchase is linked to a project or task and cannot be deleted until those links are removed."
+            });
+        }
+
+        await DeletePurchaseAttachmentsAsync(
+            [purchase.Id],
+            purchase.Property.HouseholdId,
+            platformDb,
+            storage,
+            cancellationToken);
+
+        db.Purchases.Remove(purchase);
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> BulkDeletePurchasesAsync(
+        BulkDeletePurchasesRequest request,
+        HttpContext httpContext,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        IAttachmentStorageService storage,
+        CancellationToken cancellationToken)
+    {
+        var ids = (request.PurchaseIds ?? [])
+            .Where(id => id > 0)
+            .Distinct()
+            .Take(200)
+            .ToList();
+
+        if (ids.Count == 0)
+            return Results.BadRequest(new { message = "Select at least one purchase to delete." });
+
+        var purchases = await db.Purchases
+            .Include(p => p.Property)
+            .Include(p => p.Allocations)
+            .Where(p => ids.Contains(p.Id))
+            .ToListAsync(cancellationToken);
+
+        if (purchases.Count != ids.Count)
+            return Results.NotFound(new { message = "One or more selected purchases could not be found." });
+
+        var householdIds = purchases.Select(p => p.Property.HouseholdId).Distinct().ToList();
+        if (householdIds.Count != 1)
+            return Results.BadRequest(new { message = "Selected purchases must belong to the same household." });
+
+        var householdId = householdIds[0];
+
+        var userId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!userId.HasValue) return Results.Unauthorized();
+
+        var hasAccess = await platformDb.HouseholdMembers.AnyAsync(
+            hm => hm.UserId == userId.Value && hm.HouseholdId == householdId,
+            cancellationToken);
+        if (!hasAccess) return Results.NotFound();
+
+        var protectedIds = purchases
+            .Where(p => p.Allocations.Any(a => a.ProjectId != null || a.TaskId != null))
+            .Select(p => p.Id)
+            .OrderBy(id => id)
+            .ToList();
+
+        if (protectedIds.Count > 0)
+        {
+            return Results.Conflict(new
+            {
+                message = "One or more selected purchases are linked to a project or task and cannot be deleted.",
+                protectedPurchaseIds = protectedIds
+            });
+        }
+
+        await DeletePurchaseAttachmentsAsync(
+            ids,
+            householdId,
+            platformDb,
+            storage,
+            cancellationToken);
+
+        db.Purchases.RemoveRange(purchases);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Ok(new
+        {
+            deletedCount = purchases.Count,
+            deletedPurchaseIds = ids
+        });
+    }
+
+    private static async Task DeletePurchaseAttachmentsAsync(
+        IReadOnlyCollection<int> purchaseIds,
+        int householdId,
+        LaUltimaExcursionDbContext platformDb,
+        IAttachmentStorageService storage,
+        CancellationToken cancellationToken)
+    {
+        var entityIds = purchaseIds.Select(id => id.ToString()).ToList();
+
         var attachments = await platformDb.Attachments
-            .Where(a => a.IsActive &&
-                        a.HouseholdId == purchase.Property.HouseholdId &&
-                        a.App == "home" &&
-                        a.EntityType == "Purchase" &&
-                        a.EntityId == entityId)
+            .Where(a =>
+                a.IsActive &&
+                a.HouseholdId == householdId &&
+                a.App == "home" &&
+                a.EntityType == "Purchase" &&
+                a.EntityId != null &&
+                entityIds.Contains(a.EntityId))
             .ToListAsync(cancellationToken);
 
         foreach (var attachment in attachments)
         {
             await storage.DeleteAsync(
-                AttachmentThumbnailHelper.GetThumbnailBlobName(attachment.BlobName), cancellationToken);
+                AttachmentThumbnailHelper.GetThumbnailBlobName(attachment.BlobName),
+                cancellationToken);
             await storage.DeleteAsync(attachment.BlobName, cancellationToken);
         }
 
@@ -610,10 +894,6 @@ public static class PurchaseEndpoints
             platformDb.Attachments.RemoveRange(attachments);
             await platformDb.SaveChangesAsync(cancellationToken);
         }
-
-        db.Purchases.Remove(purchase);
-        await db.SaveChangesAsync(cancellationToken);
-        return Results.NoContent();
     }
 
     private static async Task<IResult> UploadPurchaseAttachmentAsync(
@@ -917,6 +1197,15 @@ public static class PurchaseEndpoints
             .ToLowerInvariant()
             .Where(char.IsLetterOrDigit)
             .ToArray());
+    }
+
+    private static string NormalizeReceiptItemText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+
+        return System.Text.RegularExpressions.Regex
+            .Replace(value.Trim(), @"\s+", " ")
+            .ToUpperInvariant();
     }
 
     private static string? Clean(string? value) =>

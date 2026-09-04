@@ -1,3 +1,6 @@
+let selectedPurchaseIds = new Set();
+let purchaseTableSort = { key: "date", direction: "desc" };
+
 function bindPurchaseEditor() {
   document.querySelector("#addPurchaseButton")?.addEventListener("click", () => openPurchaseDialog());
   document.querySelector("#quickReceiptButton")?.addEventListener("click", openQuickReceiptDialog);
@@ -5,6 +8,7 @@ function bindPurchaseEditor() {
   document.querySelector("#cancelQuickReceiptButton")?.addEventListener("click", closeQuickReceiptDialog);
   document.querySelector("#quickReceiptForm")?.addEventListener("submit", saveQuickReceipt);
   document.querySelector("#quickReceiptFile")?.addEventListener("change", handleQuickReceiptFileSelection);
+  document.querySelector("#quickReceiptLineItems")?.addEventListener("change", handleQuickReceiptAliasChange);
   document.querySelector("#saveQuickReceiptAnywayButton")?.addEventListener("click", () => saveQuickReceipt(null, true));
   document.querySelector("#quickReceiptDialog")?.addEventListener("click", event => {
     if (event.target === event.currentTarget) closeQuickReceiptDialog();
@@ -31,15 +35,37 @@ function bindPurchaseFilters() {
     state.purchaseFilter = event.target.value.trim().toLowerCase();
     renderPurchases();
   });
+
   document.querySelector("#purchaseStatusFilter")?.addEventListener("change", event => {
     state.purchaseStatus = event.target.value;
     renderPurchases();
   });
-  document.querySelector("#purchaseSort")?.addEventListener("change", event => {
-    state.purchaseSort = event.target.value;
-    renderPurchases();
-  });
+
+  document.querySelector("#deleteSelectedPurchasesButton")?.addEventListener("click", deleteSelectedPurchases);
+
   document.querySelector("#purchases")?.addEventListener("click", event => {
+    const sortButton = event.target.closest("[data-purchase-sort]");
+    if (sortButton) {
+      setPurchaseTableSort(sortButton.dataset.purchaseSort);
+      return;
+    }
+
+    const selectAll = event.target.closest("#purchaseSelectAll");
+    if (selectAll) {
+      toggleSelectAllVisiblePurchases(selectAll.checked);
+      return;
+    }
+
+    const checkbox = event.target.closest("[data-select-purchase]");
+    if (checkbox) {
+      const id = Number(checkbox.dataset.selectPurchase);
+      if (checkbox.checked) selectedPurchaseIds.add(id);
+      else selectedPurchaseIds.delete(id);
+      updatePurchaseBulkActions();
+      updatePurchaseSelectAllState();
+      return;
+    }
+
     const row = event.target.closest("[data-purchase-id]");
     if (!row) return;
     const purchase = state.purchases.find(item => item.id === Number(row.dataset.purchaseId));
@@ -84,67 +110,268 @@ function rebuildPurchaseAllocations() {
   );
 }
 
+function getVisiblePurchases() {
+  let rows = [...state.purchases];
+
+  if (state.purchaseStatus) {
+    if (state.purchaseStatus === "Unassigned") rows = rows.filter(p => p.hasUnassigned);
+    else rows = rows.filter(p => p.status === state.purchaseStatus);
+  }
+
+  if (state.purchaseFilter) {
+    rows = rows.filter(p => {
+      const haystack = [
+        p.vendorName,
+        p.vendor,
+        p.purchaseDate,
+        p.status,
+        ...(p.allocations || []).flatMap(a => [
+          a.description,
+          a.category,
+          a.projectName,
+          a.taskTitle
+        ])
+      ].filter(Boolean).join(" ").toLowerCase();
+
+      return haystack.includes(state.purchaseFilter);
+    });
+  }
+
+  rows.sort(comparePurchaseTableRows);
+  return rows;
+}
+
 function renderPurchases() {
   const container = document.querySelector("#purchases");
   const stats = document.querySelector("#purchaseStats");
   if (!container || !stats) return;
 
-  let rows = [...state.purchases];
-  if (state.purchaseStatus) {
-    if (state.purchaseStatus === "Unassigned") rows = rows.filter(p => p.hasUnassigned);
-    else rows = rows.filter(p => p.status === state.purchaseStatus);
-  }
-  if (state.purchaseFilter) {
-    rows = rows.filter(p => {
-      const haystack = [p.vendorName, p.vendor, p.purchaseDate, p.status, ...(p.allocations || []).flatMap(a => [a.description, a.category, a.projectName, a.taskTitle])]
-        .filter(Boolean).join(" ").toLowerCase();
-      return haystack.includes(state.purchaseFilter);
-    });
-  }
-  rows.sort(comparePurchaseRows);
+  const rows = getVisiblePurchases();
 
-  const needsReview = state.purchases.filter(p => p.status !== "Verified" && p.status !== "Ignored").length;
-  const homeSpend = state.purchases.reduce((sum, p) => sum + Number(p.homeSpend || 0), 0);
-  stats.textContent = `${state.purchases.length} purchases · ${needsReview} need review · ${moneyExact.format(homeSpend)} Home spend`;
+  const existingIds = new Set(state.purchases.map(p => Number(p.id)));
+  selectedPurchaseIds = new Set(
+    [...selectedPurchaseIds].filter(id => existingIds.has(id))
+  );
+
+  const needsReview = state.purchases.filter(
+    p => p.status !== "Verified" && p.status !== "Ignored"
+  ).length;
+  const homeSpend = state.purchases.reduce(
+    (sum, p) => sum + Number(p.homeSpend || 0),
+    0
+  );
+
+  stats.textContent =
+    `${state.purchases.length} purchases · ${needsReview} need review · ${moneyExact.format(homeSpend)} Home spend`;
 
   if (!rows.length) {
     container.innerHTML = `<div class="empty">No purchases in this view.</div>`;
+    updatePurchaseBulkActions();
     return;
   }
 
-  container.innerHTML = rows.map(p => {
-    const vendor = p.vendorName || p.vendor || "Vendor not recorded";
-    const date = p.purchaseDate ? formatDateOnly(p.purchaseDate) : "Date unknown";
-    const difference = Number(p.difference || 0);
-    const statusClass = p.status === "Verified" ? "verified" : "review";
-    const allocationSummary = (p.allocations || []).slice(0, 3).map(a => a.description).join(" · ");
-    const extra = (p.allocations || []).length > 3 ? ` · +${p.allocations.length - 3} more` : "";
-    const receipt = (p.attachments || []).length ? `📎 ${(p.attachments || []).length}` : "No receipt";
-    return `<article class="purchase-row" data-purchase-id="${p.id}">
-      <div class="purchase-date">${escapeHtml(date)}</div>
-      <div class="purchase-main">
-        <div class="purchase-title-line"><strong>${escapeHtml(vendor)}</strong><span class="purchase-status ${statusClass}">${escapeHtml(p.status)}</span></div>
-        <div class="purchase-allocation-summary">${escapeHtml(allocationSummary || "Unassigned")}${escapeHtml(extra)}</div>
-        <div class="purchase-meta">${receipt}${Math.abs(difference) > .004 ? ` · Difference ${moneyExact.format(difference)}` : ""}</div>
+  const deletableVisible = rows.filter(p => p.canBulkDelete !== false);
+  const allVisibleSelected =
+    deletableVisible.length > 0 &&
+    deletableVisible.every(p => selectedPurchaseIds.has(Number(p.id)));
+
+  container.innerHTML = `
+    <div class="purchase-table">
+      <div class="purchase-table-header">
+        <div class="purchase-select-cell">
+          ${deletableVisible.length
+            ? `<input id="purchaseSelectAll" type="checkbox" ${allVisibleSelected ? "checked" : ""} aria-label="Select all deletable purchases in this view">`
+            : ""}
+        </div>
+        ${purchaseSortHeader("date", "Date")}
+        ${purchaseSortHeader("vendor", "Vendor")}
+        ${purchaseSortHeader("status", "Status")}
+        ${purchaseSortHeader("amount", "Amount", "purchase-sort-amount")}
       </div>
-      <div class="purchase-amount">${moneyExact.format(Number(p.total) || 0)}</div>
-    </article>`;
-  }).join("");
+
+      ${rows.map(p => {
+        const vendor = p.vendorName || p.vendor || "Vendor not recorded";
+        const date = p.purchaseDate ? formatDateOnly(p.purchaseDate) : "Date unknown";
+        const difference = Number(p.difference || 0);
+        const statusClass = p.status === "Verified" ? "verified" : "review";
+        const allocationSummary = (p.allocations || []).slice(0, 3).map(a => a.description).join(" · ");
+        const extra = (p.allocations || []).length > 3
+          ? ` · +${p.allocations.length - 3} more`
+          : "";
+        const receipt = (p.attachments || []).length
+          ? `📎 ${(p.attachments || []).length}`
+          : "No receipt";
+        const canDelete = p.canBulkDelete !== false;
+        const selected = selectedPurchaseIds.has(Number(p.id));
+
+        return `<article class="purchase-table-row" data-purchase-id="${p.id}">
+          <div class="purchase-select-cell">
+            ${canDelete
+              ? `<input type="checkbox" data-select-purchase="${p.id}" ${selected ? "checked" : ""} aria-label="Select ${escapeAttribute(vendor)} for deletion">`
+              : ""}
+          </div>
+
+          <div class="purchase-date">${escapeHtml(date)}</div>
+
+          <div class="purchase-main">
+            <strong class="purchase-vendor">${escapeHtml(vendor)}</strong>
+            <div class="purchase-allocation-summary">${escapeHtml(allocationSummary || "Unassigned")}${escapeHtml(extra)}</div>
+            <div class="purchase-meta">${receipt}${Math.abs(difference) > .004 ? ` · Difference ${moneyExact.format(difference)}` : ""}</div>
+          </div>
+
+          <div class="purchase-status-cell">
+            <span class="purchase-status ${statusClass}">${escapeHtml(p.status)}</span>
+          </div>
+
+          <div class="purchase-amount">${moneyExact.format(Number(p.total) || 0)}</div>
+        </article>`;
+      }).join("")}
+    </div>`;
+
+  updatePurchaseBulkActions();
+  updatePurchaseSelectAllState();
 }
 
-function comparePurchaseRows(a, b) {
-  switch (state.purchaseSort) {
-    case "oldest": return comparePurchaseDates(a, b);
-    case "highest": return Number(b.total) - Number(a.total);
-    case "lowest": return Number(a.total) - Number(b.total);
-    default: return comparePurchaseDates(b, a) || b.id - a.id;
+function purchaseSortHeader(key, label, extraClass = "") {
+  const active = purchaseTableSort.key === key;
+  const arrow = active
+    ? (purchaseTableSort.direction === "asc" ? " ↑" : " ↓")
+    : "";
+
+  return `<button type="button"
+    class="purchase-sort-header ${extraClass} ${active ? "active" : ""}"
+    data-purchase-sort="${key}">
+    ${escapeHtml(label)}${arrow}
+  </button>`;
+}
+
+function setPurchaseTableSort(key) {
+  if (!["date", "vendor", "status", "amount"].includes(key)) return;
+
+  if (purchaseTableSort.key === key) {
+    purchaseTableSort.direction =
+      purchaseTableSort.direction === "asc" ? "desc" : "asc";
+  } else {
+    purchaseTableSort.key = key;
+    purchaseTableSort.direction =
+      key === "date" || key === "amount" ? "desc" : "asc";
   }
+
+  renderPurchases();
+}
+
+function comparePurchaseTableRows(a, b) {
+  const direction = purchaseTableSort.direction === "asc" ? 1 : -1;
+  let result = 0;
+
+  switch (purchaseTableSort.key) {
+    case "vendor":
+      result = String(a.vendorName || a.vendor || "")
+        .localeCompare(String(b.vendorName || b.vendor || ""), undefined, { sensitivity: "base" });
+      break;
+    case "status":
+      result = String(a.status || "")
+        .localeCompare(String(b.status || ""), undefined, { sensitivity: "base" });
+      break;
+    case "amount":
+      result = Number(a.total || 0) - Number(b.total || 0);
+      break;
+    case "date":
+    default:
+      result = comparePurchaseDates(a, b);
+      break;
+  }
+
+  return (result || (Number(a.id) - Number(b.id))) * direction;
 }
 
 function comparePurchaseDates(a, b) {
   const aa = a?.purchaseDate ? Date.parse(`${a.purchaseDate}T00:00:00`) : 0;
   const bb = b?.purchaseDate ? Date.parse(`${b.purchaseDate}T00:00:00`) : 0;
   return aa - bb;
+}
+
+function toggleSelectAllVisiblePurchases(checked) {
+  for (const purchase of getVisiblePurchases()) {
+    if (purchase.canBulkDelete === false) continue;
+    const id = Number(purchase.id);
+    if (checked) selectedPurchaseIds.add(id);
+    else selectedPurchaseIds.delete(id);
+  }
+
+  renderPurchases();
+}
+
+function updatePurchaseSelectAllState() {
+  const selectAll = document.querySelector("#purchaseSelectAll");
+  if (!selectAll) return;
+
+  const deletableVisible = getVisiblePurchases()
+    .filter(p => p.canBulkDelete !== false);
+
+  const selectedVisibleCount = deletableVisible
+    .filter(p => selectedPurchaseIds.has(Number(p.id)))
+    .length;
+
+  selectAll.checked =
+    deletableVisible.length > 0 &&
+    selectedVisibleCount === deletableVisible.length;
+
+  selectAll.indeterminate =
+    selectedVisibleCount > 0 &&
+    selectedVisibleCount < deletableVisible.length;
+}
+
+function updatePurchaseBulkActions() {
+  const bar = document.querySelector("#purchaseBulkActions");
+  const count = document.querySelector("#purchaseSelectedCount");
+  const button = document.querySelector("#deleteSelectedPurchasesButton");
+  if (!bar || !count || !button) return;
+
+  const selectedCount = selectedPurchaseIds.size;
+  bar.hidden = selectedCount === 0;
+  count.textContent = `${selectedCount} selected`;
+  button.disabled = selectedCount === 0;
+}
+
+async function deleteSelectedPurchases() {
+  const ids = [...selectedPurchaseIds];
+  if (!ids.length) return;
+
+  const noun = ids.length === 1 ? "purchase" : "purchases";
+  if (!confirm(`Delete ${ids.length} ${noun} and all attached receipt files?`)) return;
+
+  const button = document.querySelector("#deleteSelectedPurchasesButton");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Deleting…";
+  }
+
+  try {
+    const response = await fetch("/api/home/purchases/bulk-delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({ purchaseIds: ids })
+    });
+
+    if (!response.ok) throw new Error(await readError(response));
+
+    const result = await response.json();
+    selectedPurchaseIds.clear();
+    await loadDashboard();
+    showToast(`${result.deletedCount || ids.length} ${noun} deleted.`);
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "Could not delete selected purchases.");
+  } finally {
+    if (button) {
+      button.textContent = "🗑 Delete selected";
+    }
+    updatePurchaseBulkActions();
+  }
 }
 
 
@@ -208,20 +435,21 @@ async function handleQuickReceiptFileSelection() {
     return;
   }
 
-  const isSupportedImage = ["image/jpeg", "image/png", "image/webp"].includes(
+  const supportedTypes = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+  const isSupportedReceiptFile = supportedTypes.includes(
     String(file.type || "").toLowerCase());
 
-  if (!isSupportedImage) {
+  if (!isSupportedReceiptFile) {
     showQuickReceiptAnalysis(
       "AI reading skipped",
-      "PDFs and this image type can still be saved, but automatic reading currently supports JPEG, PNG and WebP.",
+      "Automatic reading currently supports JPEG, PNG, WebP and PDF receipts.",
       []);
     return;
   }
 
   showQuickReceiptAnalysis(
     "Reading receipt…",
-    "AI is looking for vendor, date and totals.",
+    "AI is looking for vendor, date, totals and line items.",
     []);
 
   const formData = new FormData();
@@ -256,12 +484,18 @@ async function handleQuickReceiptFileSelection() {
       document.querySelector("#quickReceiptTax").value = Number(result.tax).toFixed(2);
     }
 
+    const lineItemsWithAliases = await resolveQuickReceiptAliases(result.lineItems || []);
+    renderQuickReceiptLineItems(lineItemsWithAliases);
+
     const found = [
       result.vendor ? "vendor" : null,
       result.purchaseDate ? "date" : null,
       result.total != null ? "total" : null,
       result.subtotal != null ? "subtotal" : null,
-      result.tax != null ? "tax" : null
+      result.tax != null ? "tax" : null,
+      Array.isArray(result.lineItems) && result.lineItems.length
+        ? `${result.lineItems.length} line item${result.lineItems.length === 1 ? "" : "s"}`
+        : null
     ].filter(Boolean);
 
     showQuickReceiptAnalysis(
@@ -304,10 +538,190 @@ function showQuickReceiptAnalysis(title, message, warnings) {
   }
 }
 
+
+async function resolveQuickReceiptAliases(items) {
+  const rows = Array.isArray(items) ? items : [];
+  const receiptTexts = rows
+    .map(item => String(item?.description || "").trim())
+    .filter(Boolean);
+
+  if (!receiptTexts.length) return rows;
+
+  try {
+    const response = await fetch("/api/home/purchases/item-aliases/resolve", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({ receiptTexts })
+    });
+
+    if (!response.ok) throw new Error(await readError(response));
+
+    const body = await response.json();
+    const aliases = Array.isArray(body.aliases) ? body.aliases : [];
+    const byNormalized = new Map(
+      aliases.map(alias => [
+        normalizeReceiptItemText(alias.normalizedReceiptText || alias.receiptText),
+        alias.displayName
+      ]));
+
+    return rows.map(item => {
+      const receiptText = String(item?.description || "").trim();
+      return {
+        ...item,
+        receiptText,
+        displayName: byNormalized.get(normalizeReceiptItemText(receiptText)) || receiptText
+      };
+    });
+  } catch (error) {
+    console.error("Could not resolve learned receipt item names.", error);
+    return rows.map(item => ({
+      ...item,
+      receiptText: String(item?.description || "").trim(),
+      displayName: String(item?.description || "").trim()
+    }));
+  }
+}
+
+function normalizeReceiptItemText(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+}
+
+function renderQuickReceiptLineItems(items) {
+  const section = document.querySelector("#quickReceiptLineItemsSection");
+  const count = document.querySelector("#quickReceiptLineItemsCount");
+  const container = document.querySelector("#quickReceiptLineItems");
+
+  if (!section || !count || !container) return;
+
+  const rows = Array.isArray(items)
+    ? items.filter(item => item &&
+        (String(item.description || item.receiptText || "").trim() ||
+         item.quantity != null ||
+         item.unitPrice != null ||
+         item.lineTotal != null))
+    : [];
+
+  if (!rows.length) {
+    section.hidden = true;
+    count.textContent = "0 items";
+    container.innerHTML = "";
+    return;
+  }
+
+  count.textContent = `${rows.length} item${rows.length === 1 ? "" : "s"}`;
+
+  container.innerHTML = rows.map((item, index) => {
+    const receiptText = String(item.receiptText || item.description || "Item not clearly described").trim();
+    const displayName = String(item.displayName || receiptText).trim();
+    const quantity = item.quantity != null ? Number(item.quantity) : null;
+    const unitPrice = item.unitPrice != null ? Number(item.unitPrice) : null;
+    const receiptLineTotal = item.lineTotal != null ? Number(item.lineTotal) : null;
+
+    const calculatedTotal =
+      quantity != null && unitPrice != null
+        ? Math.round(quantity * unitPrice * 100) / 100
+        : null;
+
+    const displayTotal = calculatedTotal ?? receiptLineTotal;
+
+    const details = [
+      quantity != null ? `Qty ${escapeHtml(String(quantity))}` : null,
+      unitPrice != null ? `${moneyExact.format(unitPrice)} each` : null
+    ].filter(Boolean).join(" · ");
+
+    const learned = normalizeReceiptItemText(displayName) !== normalizeReceiptItemText(receiptText);
+
+    return `<div class="quick-receipt-line-item">
+      <div class="quick-receipt-line-item-main">
+        <span class="quick-receipt-line-number">${index + 1}</span>
+        <div>
+          <input
+            class="quick-receipt-line-description"
+            type="text"
+            maxlength="300"
+            value="${escapeAttribute(displayName)}"
+            data-receipt-text="${escapeAttribute(receiptText)}"
+            aria-label="Friendly item name">
+          ${learned ? `<small class="quick-receipt-original-name">Receipt: ${escapeHtml(receiptText)}</small>` : ""}
+          ${details ? `<small>${details}</small>` : ""}
+        </div>
+      </div>
+      <strong class="quick-receipt-line-total">${displayTotal != null ? moneyExact.format(displayTotal) : "—"}</strong>
+    </div>`;
+  }).join("");
+
+  section.hidden = false;
+}
+
+async function handleQuickReceiptAliasChange(event) {
+  const input = event.target.closest(".quick-receipt-line-description");
+  if (!input) return;
+
+  const receiptText = String(input.dataset.receiptText || "").trim();
+  const displayName = String(input.value || "").trim();
+
+  if (!receiptText || !displayName) {
+    input.value = displayName || receiptText;
+    return;
+  }
+
+  input.disabled = true;
+
+  try {
+    const response = await fetch("/api/home/purchases/item-aliases", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({ receiptText, displayName })
+    });
+
+    if (!response.ok) throw new Error(await readError(response));
+
+    const result = await response.json();
+    input.value = result.displayName || displayName;
+
+    let original = input.parentElement?.querySelector(".quick-receipt-original-name");
+    const learned =
+      normalizeReceiptItemText(input.value) !== normalizeReceiptItemText(receiptText);
+
+    if (learned && !original) {
+      original = document.createElement("small");
+      original.className = "quick-receipt-original-name";
+      input.insertAdjacentElement("afterend", original);
+    }
+
+    if (original) {
+      if (learned) {
+        original.textContent = `Receipt: ${receiptText}`;
+      } else {
+        original.remove();
+      }
+    }
+
+    showToast(result.remembered
+      ? "Item name remembered."
+      : "Item name reset to receipt text.");
+  } catch (error) {
+    console.error(error);
+    showQuickReceiptError(error.message || "Could not remember that item name.");
+  } finally {
+    input.disabled = false;
+  }
+}
+
 function resetQuickReceiptAnalysis() {
   const status = document.querySelector("#quickReceiptAnalysisStatus");
   const warningBox = document.querySelector("#quickReceiptAnalysisWarnings");
   if (status) status.hidden = true;
+  renderQuickReceiptLineItems([]);
   if (warningBox) {
     warningBox.hidden = true;
     warningBox.innerHTML = "";
@@ -717,8 +1131,17 @@ function renderPurchaseReceipts(attachments) {
   if(!attachments.length){container.innerHTML=`<div class="empty compact">No receipt attached yet.</div>`;return;}
   container.innerHTML=attachments.map(a=>{
     const image=(a.contentType||"").startsWith("image/");
+    const pdf=(a.contentType||"").toLowerCase()==="application/pdf";
+    const preview = image
+      ? `<button type="button" class="expense-receipt-preview" data-view-purchase-receipt="${a.id}"><img src="/api/attachments/${a.id}/thumbnail" alt=""></button>`
+      : pdf
+        ? `<a class="expense-receipt-preview expense-receipt-pdf-preview" href="/api/attachments/${a.id}" target="_blank" rel="noopener" aria-label="Open ${escapeAttribute(a.fileName)}">
+             <iframe src="/api/attachments/${a.id}#page=1&toolbar=0&navpanes=0&scrollbar=0" title="PDF preview" tabindex="-1"></iframe>
+             <span>PDF</span>
+           </a>`
+        : `<a class="expense-receipt-document" href="/api/attachments/${a.id}" target="_blank" rel="noopener">FILE</a>`;
     return `<div class="expense-receipt-card" data-attachment-id="${a.id}">
-      ${image ? `<button type="button" class="expense-receipt-preview" data-view-purchase-receipt="${a.id}"><img src="/api/attachments/${a.id}/thumbnail" alt=""></button>` : `<a class="expense-receipt-document" href="/api/attachments/${a.id}" target="_blank">PDF</a>`}
+      ${preview}
       <div class="expense-receipt-info"><strong>${escapeHtml(a.fileName)}</strong><small>${formatFileSize(a.fileSizeBytes)}</small></div>
       <button type="button" class="attachment-delete" data-delete-purchase-receipt="${a.id}">×</button>
     </div>`;
