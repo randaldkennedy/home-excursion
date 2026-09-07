@@ -5,17 +5,41 @@ function bindImageViewer() {
   });
 }
 
-function openImageViewer(attachmentId, fileName) {
+function openImageViewer(attachmentId, fileName, contentType = "") {
   if (!attachmentId) return;
 
   const dialog = document.querySelector("#imageViewerDialog");
   const image = document.querySelector("#imageViewerImage");
+  const pdf = document.querySelector("#imageViewerPdf");
   const original = document.querySelector("#imageViewerOpenOriginal");
+  const url = `/api/attachments/${attachmentId}`;
+  const isPdf =
+    String(contentType || "").toLowerCase() === "application/pdf" ||
+    String(fileName || "").toLowerCase().endsWith(".pdf");
 
   document.querySelector("#imageViewerFileName").textContent = fileName || "Receipt";
-  image.alt = fileName || "Receipt";
-  image.src = `/api/attachments/${attachmentId}`;
-  original.href = `/api/attachments/${attachmentId}`;
+  original.href = url;
+
+  if (isPdf) {
+    if (image) {
+      image.hidden = true;
+      image.removeAttribute("src");
+    }
+    if (pdf) {
+      pdf.hidden = false;
+      pdf.src = `${url}#page=1&toolbar=0&navpanes=0`;
+    }
+  } else {
+    if (pdf) {
+      pdf.hidden = true;
+      pdf.removeAttribute("src");
+    }
+    if (image) {
+      image.hidden = false;
+      image.alt = fileName || "Receipt";
+      image.src = url;
+    }
+  }
 
   dialog.showModal();
 }
@@ -23,7 +47,11 @@ function openImageViewer(attachmentId, fileName) {
 function closeImageViewer() {
   const dialog = document.querySelector("#imageViewerDialog");
   const image = document.querySelector("#imageViewerImage");
+  const pdf = document.querySelector("#imageViewerPdf");
+
   if (image) image.removeAttribute("src");
+  if (pdf) pdf.removeAttribute("src");
+
   dialog?.close();
 }
 

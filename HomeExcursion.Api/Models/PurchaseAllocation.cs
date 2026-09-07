@@ -10,6 +10,8 @@ public class PurchaseAllocation
 
     public int? TaskId { get; set; }
 
+    public int? PurchaseLineItemId { get; set; }
+
     // Temporary bridge used only during the legacy Expense migration.
     public int? LegacyExpenseId { get; set; }
 
@@ -42,4 +44,6 @@ public class PurchaseAllocation
     public HomeProject? Project { get; set; }
 
     public HomeTask? Task { get; set; }
+
+    public PurchaseLineItem? PurchaseLineItem { get; set; }
 }

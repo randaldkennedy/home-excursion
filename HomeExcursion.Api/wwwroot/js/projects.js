@@ -65,8 +65,9 @@ function projectStatusRank(project) {
   const status = (project.status || "").trim().toLowerCase();
 
   if (status === "in progress" || status === "active") return 0;
-  if (status === "bid received" || status === "research" || status === "planned") return 1;
-  if (status === "waiting" || status === "ordered") return 2;
+  if (status === "approved" || status === "scheduled") return 1;
+  if (status === "getting bids" || status === "bid received" || status === "research" || status === "planned") return 2;
+  if (status === "waiting" || status === "on hold" || status === "ordered") return 3;
   if (status === "complete") return 9;
   if (status === "cancelled") return 10;
 
@@ -82,8 +83,20 @@ function projectDateRank(project) {
 let activeProjectId = null;
 
 function bindProjectDetails() {
+  document.querySelector("#addProjectButton")?.addEventListener("click", () => openProjectEditor());
   document.querySelector("#closeProjectDialog")?.addEventListener("click", closeProjectDialog);
   document.querySelector("#closeProjectDialogBottom")?.addEventListener("click", closeProjectDialog);
+  document.querySelector("#editProjectButton")?.addEventListener("click", () => {
+    if (!activeProjectId) return;
+    const project = state.data?.projects?.find(p => Number(p.id) === Number(activeProjectId));
+    if (project) openProjectEditor(project);
+  });
+  document.querySelector("#closeProjectEditorDialog")?.addEventListener("click", closeProjectEditor);
+  document.querySelector("#cancelProjectButton")?.addEventListener("click", closeProjectEditor);
+  document.querySelector("#projectForm")?.addEventListener("submit", saveProject);
+  document.querySelector("#projectEditorDialog")?.addEventListener("click", event => {
+    if (event.target === event.currentTarget) closeProjectEditor();
+  });
   document.querySelector("#addProjectDocumentButton")?.addEventListener("click", () => {
     document.querySelector("#projectDocumentFile")?.click();
   });
@@ -92,6 +105,225 @@ function bindProjectDetails() {
     if (event.target === event.currentTarget) closeProjectDialog();
   });
   document.querySelector("#projectDetailBody")?.addEventListener("click", handleProjectDetailClick);
+  document.querySelector("#projectDetailBody")?.addEventListener("change", handleProjectDetailChange);
+}
+
+async function handleProjectDetailChange(event) {
+  const select = event.target.closest("[data-project-status-select]");
+  if (!select) return;
+
+  const projectId = Number(select.dataset.projectStatusSelect);
+  const project = state.data?.projects?.find(p => Number(p.id) === projectId);
+  if (!project) return;
+
+  const oldStatus = project.status;
+  const newStatus = select.value;
+  if (oldStatus === newStatus) return;
+
+  select.disabled = true;
+
+  try {
+    const payload = {
+      propertyId: state.data.property.id,
+      parentProjectId: project.parentProjectId ?? null,
+      name: project.name,
+      status: newStatus,
+      purpose: project.purpose || null,
+      estimatedCost: project.estimatedCost ?? null,
+      committedCost: project.committedCost ?? null,
+      contractorName: project.contractorName || null,
+      targetDate: project.targetDate || null,
+      notes: project.notes || null
+    };
+
+    const response = await fetch(`/api/home/projects/${projectId}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) throw new Error(await readError(response));
+
+    await loadDashboard();
+    await loadProjectDetails(projectId);
+    showToast(`Project status: ${newStatus}`);
+  } catch (error) {
+    console.error(error);
+    select.value = oldStatus;
+    showToast(error.message || "Could not update project status.");
+  } finally {
+    select.disabled = false;
+  }
+}
+
+function openProjectEditor(project = null) {
+  const dialog = document.querySelector("#projectEditorDialog");
+  const form = document.querySelector("#projectForm");
+  if (!dialog || !form || !state.data?.property) return;
+
+  form.reset();
+  clearProjectFormError();
+
+  const isEdit = !!project;
+  document.querySelector("#projectEditorTitle").textContent =
+    isEdit ? "Edit project" : "Add project";
+  document.querySelector("#projectEditorId").value =
+    isEdit ? String(project.id) : "";
+
+  document.querySelector("#projectName").value = project?.name || "";
+  document.querySelector("#projectStatus").value = project?.status || "Planned";
+  document.querySelector("#projectPurpose").value = project?.purpose || "";
+  document.querySelector("#projectEstimatedCost").value = project?.estimatedCost ?? "";
+  document.querySelector("#projectCommittedCost").value = project?.committedCost ?? "";
+  document.querySelector("#projectContractorName").value = project?.contractorName || "";
+  document.querySelector("#projectTargetDate").value = project?.targetDate || "";
+  document.querySelector("#projectNotes").value = project?.notes || "";
+
+  populateProjectParentOptions(project?.id || null, project?.parentProjectId || null);
+
+  if (document.querySelector("#projectDialog")?.open) {
+    document.querySelector("#projectDialog").close();
+  }
+
+  dialog.showModal();
+  window.setTimeout(() => document.querySelector("#projectName")?.focus(), 30);
+}
+
+function closeProjectEditor() {
+  document.querySelector("#projectEditorDialog")?.close();
+  clearProjectFormError();
+}
+
+function populateProjectParentOptions(editingProjectId, selectedParentId) {
+  const select = document.querySelector("#projectParent");
+  if (!select) return;
+
+  const excludedIds = new Set();
+
+  if (editingProjectId) {
+    excludedIds.add(Number(editingProjectId));
+
+    const childrenByParent = new Map();
+    for (const project of state.data?.projects || []) {
+      if (project.parentProjectId == null) continue;
+      const parentId = Number(project.parentProjectId);
+      if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+      childrenByParent.get(parentId).push(Number(project.id));
+    }
+
+    const queue = [Number(editingProjectId)];
+    while (queue.length) {
+      const current = queue.shift();
+      for (const childId of childrenByParent.get(current) || []) {
+        if (excludedIds.has(childId)) continue;
+        excludedIds.add(childId);
+        queue.push(childId);
+      }
+    }
+  }
+
+  const options = (state.data?.projects || [])
+    .filter(project => !excludedIds.has(Number(project.id)))
+    .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+    .map(project =>
+      `<option value="${project.id}">${escapeHtml(project.name)}</option>`
+    )
+    .join("");
+
+  select.innerHTML = `<option value="">Top-level project</option>${options}`;
+  select.value = selectedParentId ? String(selectedParentId) : "";
+}
+
+async function saveProject(event) {
+  event.preventDefault();
+  clearProjectFormError();
+
+  const id = Number(document.querySelector("#projectEditorId")?.value || 0);
+  const name = document.querySelector("#projectName")?.value.trim();
+
+  if (!name) {
+    showProjectFormError("Project name is required.");
+    return;
+  }
+
+  const payload = {
+    propertyId: state.data.property.id,
+    parentProjectId: nullableProjectNumber(document.querySelector("#projectParent")?.value),
+    name,
+    status: document.querySelector("#projectStatus")?.value || "Planned",
+    purpose: document.querySelector("#projectPurpose")?.value.trim() || null,
+    estimatedCost: nullableProjectNumber(document.querySelector("#projectEstimatedCost")?.value),
+    committedCost: nullableProjectNumber(document.querySelector("#projectCommittedCost")?.value),
+    contractorName: document.querySelector("#projectContractorName")?.value.trim() || null,
+    targetDate: document.querySelector("#projectTargetDate")?.value || null,
+    notes: document.querySelector("#projectNotes")?.value.trim() || null
+  };
+
+  const button = document.querySelector("#saveProjectButton");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Saving…";
+  }
+
+  try {
+    const response = await fetch(
+      id ? `/api/home/projects/${id}` : "/api/home/projects",
+      {
+        method: id ? "PUT" : "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify(payload)
+      }
+    );
+
+    if (!response.ok)
+      throw new Error(await readError(response));
+
+    const result = await response.json();
+    const savedId = Number(result.id || id);
+
+    closeProjectEditor();
+    await loadDashboard();
+
+    showToast(id ? "Project updated." : "Project created.");
+
+    if (id && savedId) {
+      await openProjectDialog(savedId);
+    }
+  } catch (error) {
+    console.error(error);
+    showProjectFormError(error.message || "Could not save project.");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Save project";
+    }
+  }
+}
+
+function nullableProjectNumber(value) {
+  if (value == null || String(value).trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function showProjectFormError(message) {
+  const error = document.querySelector("#projectFormError");
+  if (!error) return;
+  error.textContent = message;
+  error.hidden = false;
+}
+
+function clearProjectFormError() {
+  const error = document.querySelector("#projectFormError");
+  if (!error) return;
+  error.textContent = "";
+  error.hidden = true;
 }
 
 async function openProjectDialog(projectId) {
@@ -170,13 +402,27 @@ function renderProjectDetails(detail) {
       </div>`
     : `<div class="empty">No expenses tied to this project yet.</div>`;
 
-  const attachments = renderProjectDocuments(detail.attachments || []);
+  const allAttachments = detail.attachments || [];
+  const projectPhotos = allAttachments.filter(a =>
+    a.entityType === "HomeProject" && a.contentType?.startsWith("image/")
+  );
+  const documents = allAttachments.filter(a =>
+    !(a.entityType === "HomeProject" && a.contentType?.startsWith("image/"))
+  );
+
+  const photos = renderProjectPhotos(projectPhotos);
+  const attachments = renderProjectDocuments(documents);
 
   body.innerHTML = `
     <div class="project-detail-summary">
       <div class="project-detail-stat"><span>Actual spent</span><strong>${money.format(detail.actualSpent || 0)}</strong></div>
-      <div class="project-detail-stat"><span>Status</span><strong>${escapeHtml(p.status)}</strong></div>
-      <div class="project-detail-stat"><span>Documents</span><strong>${detail.documentCount || 0}</strong></div>
+      <label class="project-detail-stat project-status-stat">
+        <span>Status</span>
+        <select class="project-detail-status-select" data-project-status-select="${p.id}">
+          ${projectStatusOptions(p.status)}
+        </select>
+      </label>
+      <div class="project-detail-stat"><span>Files</span><strong>${detail.documentCount || 0}</strong></div>
     </div>
 
     ${[p.purpose, p.contractorName, completed ? `Completed ${completed}` : null].filter(Boolean).length
@@ -185,6 +431,14 @@ function renderProjectDetails(detail) {
 
     ${p.notes ? `<p class="project-notes">${escapeHtml(p.notes)}</p>` : ""}
     ${children}
+
+    <div class="project-detail-section">
+      <div class="project-detail-section-head">
+        <h3>Project photos</h3>
+        <span>${projectPhotos.length} photo${projectPhotos.length === 1 ? "" : "s"}</span>
+      </div>
+      ${photos}
+    </div>
 
     <div class="project-detail-section">
       <h3>Expenses</h3>
@@ -198,6 +452,55 @@ function renderProjectDetails(detail) {
   `;
 }
 
+function projectStatusOptions(selectedStatus) {
+  const statuses = [
+    "Planned",
+    "Research",
+    "Getting Bids",
+    "Bid Received",
+    "Approved",
+    "Scheduled",
+    "In Progress",
+    "Waiting",
+    "On Hold",
+    "Ordered",
+    "Complete",
+    "Cancelled"
+  ];
+
+  return statuses.map(status =>
+    `<option value="${escapeAttribute(status)}" ${status === selectedStatus ? "selected" : ""}>${escapeHtml(status)}</option>`
+  ).join("");
+}
+
+function renderProjectPhotos(attachments) {
+  if (!attachments.length) {
+    return `<div class="empty project-photo-empty">No project photos yet. Add renderings, before/after shots, or progress photos.</div>`;
+  }
+
+  return `<div class="project-photo-grid">
+    ${attachments.map(attachment => `
+      <article class="project-photo-card">
+        <button type="button"
+                class="project-photo-trigger"
+                data-attachment-id="${attachment.id}"
+                data-file-name="${escapeAttribute(attachment.fileName)}"
+                data-content-type="${escapeAttribute(attachment.contentType || "")}">
+          <img src="/api/attachments/${attachment.id}/thumbnail"
+               alt="${escapeAttribute(attachment.fileName)}">
+        </button>
+        <div class="project-photo-meta">
+          <strong title="${escapeAttribute(attachment.fileName)}">${escapeHtml(attachment.fileName)}</strong>
+          <button type="button"
+                  class="document-delete"
+                  data-delete-attachment-id="${attachment.id}"
+                  data-file-name="${escapeAttribute(attachment.fileName)}">Delete</button>
+        </div>
+      </article>
+    `).join("")}
+  </div>`;
+}
+
 function renderProjectDocuments(attachments) {
   if (!attachments.length) {
     return `<div class="empty">No receipts or project documents attached yet.</div>`;
@@ -206,18 +509,19 @@ function renderProjectDocuments(attachments) {
   return `<div class="document-grid">
     ${attachments.map(attachment => {
       const isImage = attachment.contentType?.startsWith("image/");
-      const open = isImage
-        ? `<button type="button" class="document-preview project-image-trigger"
-             data-attachment-id="${attachment.id}"
-             data-file-name="${escapeAttribute(attachment.fileName)}">
-             <img src="/api/attachments/${attachment.id}/thumbnail" alt="${escapeAttribute(attachment.fileName)}">
-           </button>`
-        : `<a class="document-preview" href="/api/attachments/${attachment.id}" target="_blank" rel="noopener">
-             <span class="document-file-icon">📄</span>
-           </a>`;
+      const isPdf = attachment.contentType === "application/pdf";
+      const preview = isImage
+        ? `<img src="/api/attachments/${attachment.id}/thumbnail" alt="${escapeAttribute(attachment.fileName)}">`
+        : `<span class="document-file-icon">${isPdf ? "PDF" : "📄"}</span>`;
 
       return `<div class="document-card">
-        ${open}
+        <button type="button"
+                class="document-preview project-file-trigger"
+                data-attachment-id="${attachment.id}"
+                data-file-name="${escapeAttribute(attachment.fileName)}"
+                data-content-type="${escapeAttribute(attachment.contentType || "")}">
+          ${preview}
+        </button>
         <div class="document-meta">
           <strong title="${escapeAttribute(attachment.fileName)}">${escapeHtml(attachment.fileName)}</strong>
           <span>${formatFileSize(attachment.fileSizeBytes)} · ${new Date(attachment.uploadedUtc).toLocaleDateString()}</span>
@@ -230,26 +534,32 @@ function renderProjectDocuments(attachments) {
 
 async function uploadProjectDocument() {
   const input = document.querySelector("#projectDocumentFile");
-  const file = input.files?.[0];
-  if (!file || !activeProjectId) return;
+  const files = [...(input.files || [])];
+  if (!files.length || !activeProjectId) return;
 
   const message = document.querySelector("#projectDocumentMessage");
-  const formData = new FormData();
-  formData.append("file", file);
-
-  message.textContent = "Uploading…";
+  let uploaded = 0;
 
   try {
-    const response = await fetch(`/api/home/projects/${activeProjectId}/attachments`, {
-      method: "POST",
-      body: formData
-    });
+    for (const file of files) {
+      message.textContent = `Uploading ${uploaded + 1} of ${files.length}…`;
 
-    if (!response.ok) throw new Error(await readError(response));
+      const formData = new FormData();
+      formData.append("file", file);
 
-    message.textContent = "Uploaded.";
+      const response = await fetch(`/api/home/projects/${activeProjectId}/attachments`, {
+        method: "POST",
+        body: formData
+      });
+
+      if (!response.ok) throw new Error(await readError(response));
+      uploaded++;
+    }
+
     input.value = "";
+    message.textContent = uploaded === 1 ? "Uploaded." : `${uploaded} files uploaded.`;
     await loadProjectDetails(activeProjectId);
+    showToast(uploaded === 1 ? "Project file added." : `${uploaded} project files added.`);
   } catch (error) {
     console.error(error);
     message.textContent = error.message || "Upload failed.";
@@ -257,9 +567,13 @@ async function uploadProjectDocument() {
 }
 
 async function handleProjectDetailClick(event) {
-  const imageButton = event.target.closest(".project-image-trigger");
-  if (imageButton) {
-    openImageViewer(Number(imageButton.dataset.attachmentId), imageButton.dataset.fileName);
+  const fileButton = event.target.closest(".project-photo-trigger, .project-file-trigger");
+  if (fileButton) {
+    openImageViewer(
+      Number(fileButton.dataset.attachmentId),
+      fileButton.dataset.fileName,
+      fileButton.dataset.contentType || ""
+    );
     return;
   }
 

@@ -39,4 +39,6 @@ public class Purchase
     public Vendor? VendorRecord { get; set; }
 
     public ICollection<PurchaseAllocation> Allocations { get; set; } = new List<PurchaseAllocation>();
+
+    public ICollection<PurchaseLineItem> LineItems { get; set; } = new List<PurchaseLineItem>();
 }

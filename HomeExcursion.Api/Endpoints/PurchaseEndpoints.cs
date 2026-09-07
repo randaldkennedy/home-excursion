@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using HomeExcursion.Api.Data;
 using HomeExcursion.Api.Models;
 using HomeExcursion.Api.Services.Attachments;
@@ -20,6 +21,7 @@ public static class PurchaseEndpoints
             .DisableAntiforgery();
         group.MapPost("/purchases/item-aliases/resolve", ResolvePurchaseItemAliasesAsync);
         group.MapPut("/purchases/item-aliases", SavePurchaseItemAliasAsync);
+        group.MapPut("/purchases/{id:int}/line-items", SavePurchaseLineItemsAsync);
         group.MapPut("/purchases/{id:int}", UpdatePurchaseAsync);
         group.MapPost("/purchases/{id:int}/verify", VerifyPurchaseAsync);
         group.MapDelete("/purchases/{id:int}", DeletePurchaseAsync);
@@ -34,12 +36,26 @@ public static class PurchaseEndpoints
         int? Id,
         int? ProjectId,
         int? TaskId,
+        int? PurchaseLineItemId,
         decimal Amount,
         string Description,
         string? Category,
         string? AllocationType,
         bool? IsIncludedInHomeSpend,
         string? Notes);
+
+    private sealed record SavePurchaseLineItemRequest(
+        string ReceiptText,
+        string? DisplayName,
+        decimal? Quantity,
+        decimal? UnitPrice,
+        decimal? LineTotal);
+
+    private sealed record SavePurchaseLineItemsRequest(
+        decimal? Subtotal,
+        decimal? Tax,
+        decimal? Total,
+        List<SavePurchaseLineItemRequest>? LineItems);
 
     private sealed record ResolvePurchaseItemAliasesRequest(
         List<string>? ReceiptTexts);
@@ -85,6 +101,7 @@ public static class PurchaseEndpoints
                 .ThenInclude(a => a.Project)
             .Include(p => p.Allocations)
                 .ThenInclude(a => a.Task)
+            .Include(p => p.LineItems)
             .Include(p => p.VendorRecord)
             .OrderByDescending(p => p.PurchaseDate)
             .ThenByDescending(p => p.Id)
@@ -132,6 +149,7 @@ public static class PurchaseEndpoints
                 .ThenInclude(a => a.Project)
             .Include(p => p.Allocations)
                 .ThenInclude(a => a.Task)
+            .Include(p => p.LineItems)
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
 
         if (purchase is null) return Results.NotFound();
@@ -197,6 +215,7 @@ public static class PurchaseEndpoints
                     ProjectName = a.Project != null ? a.Project.Name : null,
                     a.TaskId,
                     TaskTitle = a.Task != null ? a.Task.Title : null,
+                    a.PurchaseLineItemId,
                     a.Amount,
                     a.Description,
                     a.Category,
@@ -206,6 +225,19 @@ public static class PurchaseEndpoints
                     a.Confidence,
                     a.IsVerified,
                     a.Notes
+                }),
+            LineItems = p.LineItems
+                .OrderBy(i => i.SortOrder)
+                .ThenBy(i => i.Id)
+                .Select(i => new
+                {
+                    i.Id,
+                    i.ReceiptText,
+                    i.DisplayName,
+                    i.Quantity,
+                    i.UnitPrice,
+                    i.LineTotal,
+                    i.SortOrder
                 }),
             Attachments = attachments
         };
@@ -377,6 +409,115 @@ public static class PurchaseEndpoints
         });
     }
 
+    private static async Task<IResult> SavePurchaseLineItemsAsync(
+        int id,
+        SavePurchaseLineItemsRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var purchase = await db.Purchases
+            .Include(p => p.LineItems)
+            .Include(p => p.Allocations)
+            .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+
+        if (purchase is null)
+            return Results.NotFound();
+
+        // "Read receipt items" is an explicit rebuild of item-level reconciliation.
+        // Any existing allocations are replaced below so old whole-receipt or
+        // partially-created item allocations cannot be counted twice.
+        var validation = ValidateLineItems(request.LineItems);
+        if (validation is not null)
+            return validation;
+
+        if (request.Total is not null && request.Total <= 0)
+            return Results.BadRequest(new { message = "Receipt total must be greater than zero." });
+
+        if (request.Subtotal is not null && request.Subtotal < 0)
+            return Results.BadRequest(new { message = "Receipt subtotal cannot be negative." });
+
+        if (request.Tax is not null && request.Tax < 0)
+            return Results.BadRequest(new { message = "Receipt tax / fees cannot be negative." });
+
+        // Reading receipt items is an explicit conversion from old whole-receipt
+        // allocations to item-level reconciliation. Remove the old unlinked
+        // allocations so the same dollars are not counted twice.
+        if (purchase.Allocations.Count > 0)
+        {
+            db.PurchaseAllocations.RemoveRange(purchase.Allocations);
+            purchase.Allocations.Clear();
+        }
+
+        db.PurchaseLineItems.RemoveRange(purchase.LineItems);
+        purchase.LineItems.Clear();
+
+        if (request.Subtotal is not null)
+            purchase.Subtotal = request.Subtotal;
+
+        if (request.Tax is not null)
+            purchase.Tax = request.Tax;
+
+        if (request.Total is not null)
+            purchase.Total = request.Total.Value;
+
+        purchase.Status = "Unreviewed";
+        purchase.VerifiedAt = null;
+
+        var sortOrder = 10;
+        foreach (var item in request.LineItems ?? [])
+        {
+            var receiptText = Clean(item.ReceiptText)!;
+            var displayName = Clean(item.DisplayName) ?? receiptText;
+
+            purchase.LineItems.Add(new PurchaseLineItem
+            {
+                ReceiptText = receiptText,
+                DisplayName = displayName,
+                Quantity = item.Quantity,
+                UnitPrice = item.UnitPrice,
+                LineTotal = item.LineTotal,
+                SortOrder = sortOrder,
+                CreatedAt = DateTime.UtcNow
+            });
+
+            sortOrder += 10;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Ok(new
+        {
+            purchase.Id,
+            lineItemCount = purchase.LineItems.Count
+        });
+    }
+
+    private static IResult? ValidateLineItems(List<SavePurchaseLineItemRequest>? lineItems)
+    {
+        if (lineItems is null)
+            return null;
+
+        if (lineItems.Count > 100)
+            return Results.BadRequest(new { message = "A receipt can contain at most 100 line items." });
+
+        foreach (var item in lineItems)
+        {
+            var receiptText = Clean(item.ReceiptText);
+            var displayName = Clean(item.DisplayName);
+
+            if (receiptText is null)
+                return Results.BadRequest(new { message = "Every receipt item needs a description." });
+
+            if (receiptText.Length > 300 || (displayName?.Length ?? 0) > 300)
+                return Results.BadRequest(new { message = "Receipt item names must be 300 characters or fewer." });
+
+            if (item.Quantity < 0 || item.UnitPrice < 0 || item.LineTotal < 0)
+                return Results.BadRequest(new { message = "Receipt item quantities and amounts cannot be negative." });
+        }
+
+        return null;
+    }
+
     private static async Task<IResult> CreateQuickReceiptAsync(
         HttpRequest request,
         HttpContext httpContext,
@@ -472,6 +613,26 @@ public static class PurchaseEndpoints
             bool.TryParse(form["allowPossibleDuplicate"].ToString(), out var allowDuplicate) &&
             allowDuplicate;
 
+        List<SavePurchaseLineItemRequest>? lineItems = null;
+        var lineItemsJson = form["lineItems"].ToString();
+        if (!string.IsNullOrWhiteSpace(lineItemsJson))
+        {
+            try
+            {
+                lineItems = JsonSerializer.Deserialize<List<SavePurchaseLineItemRequest>>(
+                    lineItemsJson,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            }
+            catch (JsonException)
+            {
+                return Results.BadRequest(new { message = "Receipt line items are invalid." });
+            }
+
+            var lineItemValidation = ValidateLineItems(lineItems);
+            if (lineItemValidation is not null)
+                return lineItemValidation;
+        }
+
         var property = await db.Properties
             .AsNoTracking()
             .Where(p => p.IsActive)
@@ -533,6 +694,23 @@ public static class PurchaseEndpoints
             Source = "Quick Receipt",
             CreatedAt = DateTime.UtcNow
         };
+
+        var sortOrder = 10;
+        foreach (var item in lineItems ?? [])
+        {
+            var receiptText = Clean(item.ReceiptText)!;
+            purchase.LineItems.Add(new PurchaseLineItem
+            {
+                ReceiptText = receiptText,
+                DisplayName = Clean(item.DisplayName) ?? receiptText,
+                Quantity = item.Quantity,
+                UnitPrice = item.UnitPrice,
+                LineTotal = item.LineTotal,
+                SortOrder = sortOrder,
+                CreatedAt = DateTime.UtcNow
+            });
+            sortOrder += 10;
+        }
 
         purchase.Allocations.Add(new PurchaseAllocation
         {
@@ -630,7 +808,7 @@ public static class PurchaseEndpoints
         HomeExcursionDbContext db,
         CancellationToken cancellationToken)
     {
-        var validation = await ValidatePurchaseRequestAsync(request, db, cancellationToken);
+        var validation = await ValidatePurchaseRequestAsync(request, db, cancellationToken, null);
         if (validation is not null) return validation;
 
         var duplicateCandidates = await FindDuplicateCandidatesAsync(request, null, db, cancellationToken);
@@ -675,11 +853,12 @@ public static class PurchaseEndpoints
     {
         var purchase = await db.Purchases
             .Include(p => p.Allocations)
+            .Include(p => p.LineItems)
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
 
         if (purchase is null) return Results.NotFound();
 
-        var validation = await ValidatePurchaseRequestAsync(request, db, cancellationToken);
+        var validation = await ValidatePurchaseRequestAsync(request, db, cancellationToken, id);
         if (validation is not null) return validation;
 
         var duplicateCandidates = await FindDuplicateCandidatesAsync(request, id, db, cancellationToken);
@@ -712,25 +891,66 @@ public static class PurchaseEndpoints
 
     private static async Task<IResult> VerifyPurchaseAsync(
         int id,
+        SavePurchaseRequest request,
         HomeExcursionDbContext db,
         CancellationToken cancellationToken)
     {
         var purchase = await db.Purchases
             .Include(p => p.Allocations)
+            .Include(p => p.LineItems)
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
 
         if (purchase is null) return Results.NotFound();
 
-        var allocated = purchase.Allocations.Sum(a => a.Amount);
-        if (allocated != purchase.Total)
+        var validation = await ValidatePurchaseRequestAsync(
+            request,
+            db,
+            cancellationToken,
+            id);
+
+        if (validation is not null) return validation;
+
+        var duplicateCandidates = await FindDuplicateCandidatesAsync(
+            request,
+            id,
+            db,
+            cancellationToken);
+
+        if (duplicateCandidates.Count > 0 && !request.AllowPossibleDuplicate)
         {
             return Results.Conflict(new
             {
-                message = $"Receipt does not reconcile. Difference: {(purchase.Total - allocated):C2}."
+                message = "This looks like another purchase already in Home Excursion.",
+                possibleDuplicate = true,
+                duplicates = duplicateCandidates
             });
         }
 
-        if (purchase.Allocations.Count == 0 || purchase.Allocations.Any(a => a.AllocationType == "Unassigned"))
+        purchase.PropertyId = request.PropertyId;
+        purchase.VendorId = request.VendorId;
+        purchase.Vendor = Clean(request.Vendor);
+        purchase.PurchaseDate = request.PurchaseDate;
+        purchase.Subtotal = request.Subtotal;
+        purchase.Tax = request.Tax;
+        purchase.Total = request.Total;
+        purchase.Notes = Clean(request.Notes);
+        purchase.VerifiedAt = null;
+
+        await ReplaceAllocationsAsync(purchase, request, db, cancellationToken);
+
+        var allocated = purchase.Allocations.Sum(a => a.Amount);
+        var difference = purchase.Total - allocated;
+
+        if (Math.Abs(difference) >= 0.005m)
+        {
+            return Results.Conflict(new
+            {
+                message = $"Receipt does not reconcile. Difference: {difference:C2}."
+            });
+        }
+
+        if (purchase.Allocations.Count == 0 ||
+            purchase.Allocations.Any(a => a.AllocationType == "Unassigned"))
         {
             return Results.Conflict(new
             {
@@ -740,11 +960,18 @@ public static class PurchaseEndpoints
 
         purchase.Status = "Verified";
         purchase.VerifiedAt = DateTime.UtcNow;
+
         foreach (var allocation in purchase.Allocations)
             allocation.IsVerified = true;
 
         await db.SaveChangesAsync(cancellationToken);
-        return Results.Ok(new { purchase.Id, purchase.Status, purchase.VerifiedAt });
+
+        return Results.Ok(new
+        {
+            purchase.Id,
+            purchase.Status,
+            purchase.VerifiedAt
+        });
     }
 
     private static async Task<IResult> DeletePurchaseAsync(
@@ -991,7 +1218,8 @@ public static class PurchaseEndpoints
     private static async Task<IResult?> ValidatePurchaseRequestAsync(
         SavePurchaseRequest request,
         HomeExcursionDbContext db,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? expectedPurchaseId)
     {
         if (request.Total < 0)
             return Results.BadRequest(new { message = "Receipt total cannot be negative." });
@@ -1012,7 +1240,9 @@ public static class PurchaseEndpoints
                 return Results.BadRequest(new { message = "Vendor was not found." });
         }
 
-        foreach (var allocation in request.Allocations ?? new())
+        var allocations = request.Allocations ?? new List<SaveAllocationRequest>();
+
+        foreach (var allocation in allocations)
         {
             if (allocation.Amount < 0)
                 return Results.BadRequest(new { message = "Allocation amounts cannot be negative." });
@@ -1046,6 +1276,31 @@ public static class PurchaseEndpoints
             }
         }
 
+        var requestedLineItemIds = allocations
+            .Where(a => a.PurchaseLineItemId is not null)
+            .Select(a => a.PurchaseLineItemId!.Value)
+            .Distinct()
+            .ToList();
+
+        if (requestedLineItemIds.Count > 0)
+        {
+            if (expectedPurchaseId is null)
+                return Results.BadRequest(new { message = "Receipt line items can only be allocated on an existing purchase." });
+
+            var validLineItemCount = await db.PurchaseLineItems
+                .CountAsync(i =>
+                    requestedLineItemIds.Contains(i.Id) &&
+                    i.PurchaseId == expectedPurchaseId.Value &&
+                    i.Purchase.PropertyId == request.PropertyId,
+                    cancellationToken);
+
+            if (validLineItemCount != requestedLineItemIds.Count)
+                return Results.BadRequest(new { message = "One or more receipt items do not belong to this purchase." });
+
+            if (requestedLineItemIds.Count != allocations.Count(a => a.PurchaseLineItemId is not null))
+                return Results.BadRequest(new { message = "Each receipt line item can only be allocated once." });
+        }
+
         return null;
     }
 
@@ -1069,7 +1324,7 @@ public static class PurchaseEndpoints
                 Amount = request.Total,
                 Description = "Unassigned purchase",
                 AllocationType = "Unassigned",
-                IsIncludedInHomeSpend = true,
+                IsIncludedInHomeSpend = false,
                 SuggestedBy = "User",
                 IsVerified = false,
                 CreatedAt = DateTime.UtcNow
@@ -1093,11 +1348,12 @@ public static class PurchaseEndpoints
             {
                 ProjectId = projectId,
                 TaskId = item.TaskId,
+                PurchaseLineItemId = item.PurchaseLineItemId,
                 Amount = item.Amount,
                 Description = item.Description.Trim(),
                 Category = Clean(item.Category),
                 AllocationType = type,
-                IsIncludedInHomeSpend = type == "PersonalExcluded"
+                IsIncludedInHomeSpend = type is "PersonalExcluded" or "Unassigned"
                     ? false
                     : item.IsIncludedInHomeSpend ?? true,
                 SuggestedBy = "User",

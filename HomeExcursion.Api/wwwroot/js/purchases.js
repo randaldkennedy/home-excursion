@@ -1,5 +1,6 @@
 let selectedPurchaseIds = new Set();
 let purchaseTableSort = { key: "date", direction: "desc" };
+let quickReceiptLineItemsDraft = [];
 
 function bindPurchaseEditor() {
   document.querySelector("#addPurchaseButton")?.addEventListener("click", () => openPurchaseDialog());
@@ -21,6 +22,9 @@ function bindPurchaseEditor() {
   document.querySelector("#addAllocationButton")?.addEventListener("click", () => addAllocationRow());
   document.querySelector("#purchaseAllocations")?.addEventListener("click", handleAllocationClick);
   document.querySelector("#purchaseAllocations")?.addEventListener("change", handleAllocationChange);
+  document.querySelector("#purchaseLineItems")?.addEventListener("change", handlePurchaseLineItemAssignmentChange);
+  document.querySelector("#readPurchaseLineItemsButton")?.addEventListener("click", readExistingPurchaseLineItems);
+  document.querySelector("#readPurchaseLineItemsEmptyButton")?.addEventListener("click", readExistingPurchaseLineItems);
   document.querySelector("#purchaseTotal")?.addEventListener("input", updateReconciliation);
   document.querySelector("#purchaseReceiptFiles")?.addEventListener("change", handlePurchaseReceiptSelection);
   document.querySelector("#purchaseExistingReceipts")?.addEventListener("click", handlePurchaseReceiptClick);
@@ -485,7 +489,8 @@ async function handleQuickReceiptFileSelection() {
     }
 
     const lineItemsWithAliases = await resolveQuickReceiptAliases(result.lineItems || []);
-    renderQuickReceiptLineItems(lineItemsWithAliases);
+    quickReceiptLineItemsDraft = lineItemsWithAliases.map(item => ({ ...item }));
+    renderQuickReceiptLineItems(quickReceiptLineItemsDraft);
 
     const found = [
       result.vendor ? "vendor" : null,
@@ -688,6 +693,11 @@ async function handleQuickReceiptAliasChange(event) {
     const result = await response.json();
     input.value = result.displayName || displayName;
 
+    const draftItem = quickReceiptLineItemsDraft.find(
+      item => normalizeReceiptItemText(item.receiptText || item.description) === normalizeReceiptItemText(receiptText)
+    );
+    if (draftItem) draftItem.displayName = input.value;
+
     let original = input.parentElement?.querySelector(".quick-receipt-original-name");
     const learned =
       normalizeReceiptItemText(input.value) !== normalizeReceiptItemText(receiptText);
@@ -718,6 +728,7 @@ async function handleQuickReceiptAliasChange(event) {
 }
 
 function resetQuickReceiptAnalysis() {
+  quickReceiptLineItemsDraft = [];
   const status = document.querySelector("#quickReceiptAnalysisStatus");
   const warningBox = document.querySelector("#quickReceiptAnalysisWarnings");
   if (status) status.hidden = true;
@@ -772,6 +783,15 @@ async function saveQuickReceipt(event, allowPossibleDuplicate = false) {
   formData.append("tax", tax);
   formData.append("purchaseDate", purchaseDate);
   formData.append("allowPossibleDuplicate", String(Boolean(allowPossibleDuplicate)));
+  formData.append("lineItems", JSON.stringify(
+    quickReceiptLineItemsDraft.map(item => ({
+      receiptText: String(item.receiptText || item.description || "").trim(),
+      displayName: String(item.displayName || item.receiptText || item.description || "").trim(),
+      quantity: item.quantity == null ? null : Number(item.quantity),
+      unitPrice: item.unitPrice == null ? null : Number(item.unitPrice),
+      lineTotal: item.lineTotal == null ? null : Number(item.lineTotal)
+    }))
+  ));
 
   setQuickReceiptBusy(true);
 
@@ -860,9 +880,9 @@ function openPurchaseDialog(purchase = null, defaults = {}) {
   document.querySelector("#purchaseDialogTitle").textContent = isEdit ? "Reconcile purchase" : "Add purchase";
   document.querySelector("#purchaseId").value = purchase?.id ?? "";
   document.querySelector("#purchaseDate").value = purchase?.purchaseDate ?? new Date().toISOString().slice(0, 10);
-  document.querySelector("#purchaseTotal").value = purchase?.total ?? "";
-  document.querySelector("#purchaseSubtotal").value = purchase?.subtotal ?? "";
-  document.querySelector("#purchaseTax").value = purchase?.tax ?? "";
+  document.querySelector("#purchaseTotal").value = formatMoneyInput(purchase?.total);
+  document.querySelector("#purchaseSubtotal").value = formatMoneyInput(purchase?.subtotal);
+  document.querySelector("#purchaseTax").value = formatMoneyInput(purchase?.tax);
   document.querySelector("#purchaseVendor").value = purchase?.vendorName || purchase?.vendor || "";
   document.querySelector("#purchaseNotes").value = purchase?.notes ?? "";
   document.querySelector("#purchaseStatusBadge").textContent = purchase?.status || "New";
@@ -874,11 +894,19 @@ function openPurchaseDialog(purchase = null, defaults = {}) {
   clearPurchaseError();
 
   allocationDraft = (purchase?.allocations || []).map(a => ({ ...a, _key: ++allocationSequence }));
+
+  if (purchase?.lineItems?.length) {
+    allocationDraft = buildReceiptItemAllocations(purchase, allocationDraft);
+  }
+
   if (!allocationDraft.length) {
     allocationDraft.push(newAllocation(defaults));
   }
+
+  renderPurchaseLineItems(purchase);
   renderAllocationRows();
   renderPurchaseReceipts(purchase?.attachments || []);
+  updateOtherAllocationVisibility();
   updateReconciliation();
   document.querySelector("#purchaseDialog").showModal();
 }
@@ -891,31 +919,55 @@ function newAllocation(defaults = {}) {
     id: null,
     projectId,
     taskId,
+    purchaseLineItemId: defaults.purchaseLineItemId ?? null,
     amount: "",
     description: taskId ? (state.data?.tasks?.find(t => t.id === taskId)?.title || "") : "",
     category: "",
     allocationType: taskId ? "Task" : (projectId ? "Project" : "Unassigned"),
-    isIncludedInHomeSpend: true,
+    isIncludedInHomeSpend: Boolean(taskId || projectId),
     notes: ""
   };
 }
 
 function addAllocationRow(defaults = {}) {
+  const purchase = currentOpenPurchase();
+  if (purchase?.lineItems?.length) {
+    showToast("Receipt items are already handling the allocation.");
+    return;
+  }
+
   allocationDraft.push(newAllocation(defaults));
   renderAllocationRows();
+  updateOtherAllocationVisibility();
   updateReconciliation();
 }
 
 function renderAllocationRows() {
   const container = document.querySelector("#purchaseAllocations");
-  container.innerHTML = allocationDraft.map((a, index) => {
+  const rows = allocationDraft.filter(a => !a.purchaseLineItemId);
+
+  if (!rows.length) {
+    container.innerHTML = "";
+    updateOtherAllocationVisibility();
+    return;
+  }
+
+  container.innerHTML = rows.map((a, index) => {
     const typeOptions = [
-      ["Task","Task"], ["Project","Project"], ["GeneralHome","General Home"], ["Maintenance","Maintenance"],
-      ["TaxFee","Tax / Fees"], ["PersonalExcluded","Personal / Excluded"], ["Unassigned","Unassigned"]
-    ].map(([value,label]) => `<option value="${value}" ${a.allocationType === value ? "selected" : ""}>${label}</option>`).join("");
+      ["Task","Task"],
+      ["Project","Project"],
+      ["GeneralHome","General Home"],
+      ["Maintenance","Maintenance"],
+      ["TaxFee","Tax / Fees"],
+      ["PersonalExcluded","Personal / Excluded"],
+      ["Unassigned","Unassigned"]
+    ].map(([value,label]) =>
+      `<option value="${value}" ${a.allocationType === value ? "selected" : ""}>${label}</option>`
+    ).join("");
+
     return `<div class="allocation-row" data-allocation-key="${a._key}">
       <div class="allocation-row-top">
-        <strong>Allocation ${index + 1}</strong>
+        <strong>Other allocation ${index + 1}</strong>
         <button type="button" class="icon-btn allocation-remove" data-remove-allocation="${a._key}" aria-label="Remove allocation">×</button>
       </div>
       <div class="allocation-grid">
@@ -928,6 +980,394 @@ function renderAllocationRows() {
       </div>
     </div>`;
   }).join("");
+}
+
+function shouldSeedReceiptItemAllocations(purchase, allocations) {
+  if (!purchase?.lineItems?.length) return false;
+  if (!allocations.length) return true;
+
+  return allocations.length === 1 &&
+    allocations[0].allocationType === "Unassigned" &&
+    !allocations[0].purchaseLineItemId &&
+    String(allocations[0].description || "").toLowerCase().includes("quick receipt");
+}
+
+function lineItemAmount(item) {
+  const quantity = item.quantity == null ? null : Number(item.quantity);
+  const unitPrice = item.unitPrice == null ? null : Number(item.unitPrice);
+  const lineTotal = item.lineTotal == null ? null : Number(item.lineTotal);
+
+  if (quantity != null && unitPrice != null) {
+    return Math.round(quantity * unitPrice * 100) / 100;
+  }
+
+  return lineTotal ?? 0;
+}
+
+function buildReceiptItemAllocations(purchase, existingAllocations = []) {
+  const existingByLineItem = new Map(
+    existingAllocations
+      .filter(a => a.purchaseLineItemId)
+      .map(a => [Number(a.purchaseLineItemId), a])
+  );
+
+  const allocations = (purchase.lineItems || []).map(item => {
+    const existing = existingByLineItem.get(Number(item.id));
+
+    if (existing) {
+      return {
+        ...existing,
+        _key: ++allocationSequence,
+        purchaseLineItemId: item.id,
+        amount: lineItemAmount(item),
+        description: item.displayName || item.receiptText || existing.description || "Receipt item"
+      };
+    }
+
+    return {
+      _key: ++allocationSequence,
+      id: null,
+      projectId: null,
+      taskId: null,
+      purchaseLineItemId: item.id,
+      amount: lineItemAmount(item),
+      description: item.displayName || item.receiptText || "Receipt item",
+      category: "",
+      allocationType: "Unassigned",
+      isIncludedInHomeSpend: false,
+      notes: ""
+    };
+  });
+
+  const itemTotal = allocations.reduce((sum, a) => sum + Number(a.amount || 0), 0);
+  const tax = Number(purchase.tax || 0);
+
+  if (tax > 0) {
+    allocations.push({
+      _key: ++allocationSequence,
+      id: null,
+      projectId: null,
+      taskId: null,
+      purchaseLineItemId: null,
+      amount: tax,
+      description: "Tax / fees",
+      category: "Tax / Fees",
+      allocationType: "TaxFee",
+      isIncludedInHomeSpend: true,
+      notes: ""
+    });
+  }
+
+  const currentTotal = itemTotal + tax;
+  const remainder = Math.round((Number(purchase.total || 0) - currentTotal) * 100) / 100;
+
+  if (Math.abs(remainder) >= .005) {
+    allocations.push({
+      _key: ++allocationSequence,
+      id: null,
+      projectId: null,
+      taskId: null,
+      purchaseLineItemId: null,
+      amount: remainder,
+      description: "Receipt remainder — unassigned",
+      category: "",
+      allocationType: "Unassigned",
+      isIncludedInHomeSpend: false,
+      notes: ""
+    });
+  }
+
+  return allocations;
+}
+
+function renderPurchaseLineItems(purchase) {
+  const section = document.querySelector("#purchaseLineItemSection");
+  const empty = document.querySelector("#purchaseLineItemEmpty");
+  const container = document.querySelector("#purchaseLineItems");
+  const readButton = document.querySelector("#readPurchaseLineItemsButton");
+  const emptyReadButton = document.querySelector("#readPurchaseLineItemsEmptyButton");
+
+  if (!section || !empty || !container) return;
+
+  const items = purchase?.lineItems || [];
+  const hasReceipt = (purchase?.attachments || []).length > 0;
+
+  if (!items.length) {
+    section.hidden = true;
+    empty.hidden = !purchase?.id || !hasReceipt;
+    if (emptyReadButton) emptyReadButton.disabled = false;
+    return;
+  }
+
+  empty.hidden = true;
+  section.hidden = false;
+  if (readButton) {
+    const itemTotal = items.reduce((sum, item) => sum + lineItemAmount(item), 0);
+    const knownTax = purchase?.tax == null ? null : Number(purchase.tax);
+    const expected = itemTotal + (knownTax ?? 0);
+    const needsReceiptRefresh =
+      purchase?.subtotal == null ||
+      purchase?.tax == null ||
+      Math.abs(Number(purchase?.total || 0) - expected) >= .005;
+
+    readButton.hidden = !hasReceipt || !needsReceiptRefresh;
+    readButton.textContent = "Fix totals from receipt";
+  }
+
+  container.innerHTML = items.map(item => {
+    const allocation = allocationDraft.find(
+      a => Number(a.purchaseLineItemId) === Number(item.id)
+    );
+
+    const amount = allocation ? Number(allocation.amount || 0) : lineItemAmount(item);
+    const details = [
+      item.quantity != null ? `Qty ${item.quantity}` : null,
+      item.unitPrice != null ? `${moneyExact.format(Number(item.unitPrice))} each` : null
+    ].filter(Boolean).join(" · ");
+
+    return `<div class="purchase-line-item-row" data-purchase-line-item="${item.id}">
+      <div class="purchase-line-item-copy">
+        <strong>${escapeHtml(item.displayName || item.receiptText || "Receipt item")}</strong>
+        ${item.displayName && item.receiptText && normalizeReceiptItemText(item.displayName) !== normalizeReceiptItemText(item.receiptText)
+          ? `<small>Receipt: ${escapeHtml(item.receiptText)}</small>`
+          : ""}
+        ${details ? `<small>${escapeHtml(details)}</small>` : ""}
+      </div>
+      <strong class="purchase-line-item-amount">${moneyExact.format(amount)}</strong>
+      <label class="purchase-line-item-destination">
+        <span>Assign to</span>
+        <select data-line-item-destination="${item.id}">
+          ${receiptItemDestinationOptions(allocation)}
+        </select>
+      </label>
+    </div>`;
+  }).join("");
+}
+
+function receiptItemDestinationOptions(allocation) {
+  const selected = receiptItemDestinationValue(allocation);
+
+  const option = (value, label) =>
+    `<option value="${escapeAttribute(value)}" ${selected === value ? "selected" : ""}>${escapeHtml(label)}</option>`;
+
+  const projectOptionsHtml = [...(state.data?.projects || [])]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(p => option(`project:${p.id}`, p.name))
+    .join("");
+
+  const taskOptionsHtml = [...(state.data?.tasks || [])]
+    .sort((a, b) => {
+      const ap = a.projectName || "";
+      const bp = b.projectName || "";
+      return ap.localeCompare(bp) || a.title.localeCompare(b.title);
+    })
+    .map(t => {
+      const prefix = t.projectName ? `${t.projectName} · ` : "";
+      return option(`task:${t.id}`, `${prefix}${t.title}`);
+    })
+    .join("");
+
+  return [
+    option("unassigned", "Unassigned"),
+    option("misc", "Misc Household"),
+    option("tools", "Tools"),
+    option("excluded", "Personal / Excluded"),
+    projectOptionsHtml ? `<optgroup label="Projects">${projectOptionsHtml}</optgroup>` : "",
+    taskOptionsHtml ? `<optgroup label="Tasks">${taskOptionsHtml}</optgroup>` : ""
+  ].join("");
+}
+
+function receiptItemDestinationValue(allocation) {
+  if (!allocation || allocation.allocationType === "Unassigned") return "unassigned";
+  if (allocation.allocationType === "PersonalExcluded") return "excluded";
+  if (allocation.allocationType === "Task" && allocation.taskId) return `task:${allocation.taskId}`;
+  if (allocation.allocationType === "Project" && allocation.projectId) return `project:${allocation.projectId}`;
+  if (allocation.allocationType === "GeneralHome" && allocation.category === "Tools") return "tools";
+  if (allocation.allocationType === "GeneralHome") return "misc";
+  return "unassigned";
+}
+
+function handlePurchaseLineItemAssignmentChange(event) {
+  const select = event.target.closest("[data-line-item-destination]");
+  if (!select) return;
+
+  const lineItemId = Number(select.dataset.lineItemDestination);
+  const item = currentPurchaseLineItem(lineItemId);
+  if (!item) return;
+
+  let allocation = allocationDraft.find(
+    a => Number(a.purchaseLineItemId) === lineItemId
+  );
+
+  if (!allocation) {
+    allocation = {
+      _key: ++allocationSequence,
+      id: null,
+      projectId: null,
+      taskId: null,
+      purchaseLineItemId: lineItemId,
+      amount: lineItemAmount(item),
+      description: item.displayName || item.receiptText || "Receipt item",
+      category: "",
+      allocationType: "Unassigned",
+      isIncludedInHomeSpend: false,
+      notes: ""
+    };
+    allocationDraft.push(allocation);
+  }
+
+  const value = select.value;
+  allocation.projectId = null;
+  allocation.taskId = null;
+  allocation.category = "";
+  allocation.isIncludedInHomeSpend = false;
+
+  if (value === "misc") {
+    allocation.allocationType = "GeneralHome";
+    allocation.category = "Misc Household";
+    allocation.isIncludedInHomeSpend = true;
+  } else if (value === "tools") {
+    allocation.allocationType = "GeneralHome";
+    allocation.category = "Tools";
+    allocation.isIncludedInHomeSpend = true;
+  } else if (value === "excluded") {
+    allocation.allocationType = "PersonalExcluded";
+  } else if (value.startsWith("project:")) {
+    allocation.projectId = Number(value.split(":")[1]);
+    allocation.allocationType = "Project";
+    allocation.isIncludedInHomeSpend = true;
+  } else if (value.startsWith("task:")) {
+    allocation.taskId = Number(value.split(":")[1]);
+    const task = state.data?.tasks?.find(t => Number(t.id) === allocation.taskId);
+    allocation.projectId = task?.projectId ?? null;
+    allocation.allocationType = "Task";
+    allocation.isIncludedInHomeSpend = true;
+  } else {
+    allocation.allocationType = "Unassigned";
+  }
+
+  renderPurchaseLineItems(currentOpenPurchase());
+  updateOtherAllocationVisibility();
+  updateReconciliation();
+}
+
+function currentOpenPurchase() {
+  const id = Number(document.querySelector("#purchaseId")?.value || 0);
+  return state.purchases?.find(p => Number(p.id) === id) || null;
+}
+
+function currentPurchaseLineItem(id) {
+  return currentOpenPurchase()?.lineItems?.find(item => Number(item.id) === Number(id)) || null;
+}
+
+async function readExistingPurchaseLineItems() {
+  const purchase = currentOpenPurchase();
+  const attachment = purchase?.attachments?.[0];
+
+  clearPurchaseError();
+  if (!purchase || !attachment) {
+    showPurchaseError("Attach a receipt before reading line items.");
+    return;
+  }
+
+  const buttons = [
+    document.querySelector("#readPurchaseLineItemsButton"),
+    document.querySelector("#readPurchaseLineItemsEmptyButton")
+  ].filter(Boolean);
+
+  buttons.forEach(button => {
+    button.disabled = true;
+    button.textContent = "Reading…";
+  });
+
+  try {
+    const fileResponse = await fetch(`/api/attachments/${attachment.id}`);
+    if (!fileResponse.ok) throw new Error(await readError(fileResponse));
+
+    const blob = await fileResponse.blob();
+    const formData = new FormData();
+    formData.append("file", new File(
+      [blob],
+      attachment.fileName || "receipt",
+      { type: attachment.contentType || blob.type || "application/octet-stream" }
+    ));
+
+    const analysisResponse = await fetch("/api/home/receipt-analysis/analyze", {
+      method: "POST",
+      body: formData,
+      headers: { Accept: "application/json" }
+    });
+
+    if (!analysisResponse.ok)
+      throw new Error(await readError(analysisResponse));
+
+    const analysis = await analysisResponse.json();
+    const resolved = await resolveQuickReceiptAliases(analysis.lineItems || []);
+
+    if (!resolved.length)
+      throw new Error("I couldn't find any receipt line items.");
+
+    const saveResponse = await fetch(`/api/home/purchases/${purchase.id}/line-items`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({
+        subtotal: analysis.subtotal == null ? null : Number(analysis.subtotal),
+        tax: analysis.tax == null ? null : Number(analysis.tax),
+        total: analysis.total == null ? null : Number(analysis.total),
+        lineItems: resolved.map(item => ({
+          receiptText: String(item.receiptText || item.description || "").trim(),
+          displayName: String(item.displayName || item.receiptText || item.description || "").trim(),
+          quantity: item.quantity == null ? null : Number(item.quantity),
+          unitPrice: item.unitPrice == null ? null : Number(item.unitPrice),
+          lineTotal: item.lineTotal == null ? null : Number(item.lineTotal)
+        }))
+      })
+    });
+
+    if (!saveResponse.ok)
+      throw new Error(await readError(saveResponse));
+
+    await loadDashboard();
+    const refreshed = state.purchases.find(p => Number(p.id) === Number(purchase.id));
+    if (refreshed) openPurchaseDialog(refreshed);
+
+    showToast("Receipt items loaded.");
+  } catch (error) {
+    console.error(error);
+    showPurchaseError(error.message || "Could not read receipt items.");
+  } finally {
+    buttons.forEach(button => {
+      button.disabled = false;
+      button.textContent = button.id === "readPurchaseLineItemsButton"
+        ? "Fix totals from receipt"
+        : "Read receipt items";
+    });
+  }
+}
+
+
+function updateOtherAllocationVisibility() {
+  const container = document.querySelector("#purchaseAllocations");
+  const heading = container?.previousElementSibling;
+  const addButton = document.querySelector("#addAllocationButton");
+  const purchase = currentOpenPurchase();
+  const hasReceiptItems = Boolean(purchase?.lineItems?.length);
+  const hasOtherAllocations = allocationDraft.some(a => !a.purchaseLineItemId);
+
+  // Once a receipt has item-level detail, tax/remainder allocations are
+  // bookkeeping details handled automatically. Do not make the user manage
+  // a second allocation system underneath the receipt items.
+  const showOtherAllocations = !hasReceiptItems && hasOtherAllocations;
+
+  if (heading?.classList.contains("allocation-heading")) {
+    heading.hidden = !showOtherAllocations;
+  }
+
+  if (container) container.hidden = !showOtherAllocations;
+  if (addButton) addButton.hidden = hasReceiptItems;
 }
 
 function projectOptions(selected) {
@@ -952,6 +1392,7 @@ function handleAllocationClick(event) {
   allocationDraft = allocationDraft.filter(a => a._key !== Number(remove.dataset.removeAllocation));
   if (!allocationDraft.length) allocationDraft.push(newAllocation());
   renderAllocationRows();
+  updateOtherAllocationVisibility();
   updateReconciliation();
 }
 
@@ -967,7 +1408,7 @@ function handleAllocationChange(event) {
   allocation[field] = value;
 
   if (field === "allocationType") {
-    allocation.isIncludedInHomeSpend = value !== "PersonalExcluded";
+    allocation.isIncludedInHomeSpend = !["PersonalExcluded", "Unassigned"].includes(value);
     if (value !== "Task") allocation.taskId = null;
     if (!["Task","Project"].includes(value)) allocation.projectId = null;
     renderAllocationRows();
@@ -997,8 +1438,18 @@ function updateReconciliation() {
   document.querySelector("#reconcileExcluded").textContent = moneyExact.format(excluded);
   const differenceElement = document.querySelector("#reconcileDifference");
   differenceElement.textContent = moneyExact.format(difference);
-  differenceElement.classList.toggle("balanced", Math.abs(difference) < .005);
-  differenceElement.classList.toggle("unbalanced", Math.abs(difference) >= .005);
+  const balanced = Math.abs(difference) < .005;
+  differenceElement.classList.toggle("balanced", balanced);
+  differenceElement.classList.toggle("unbalanced", !balanced);
+
+  const hasUnassigned = allocationDraft.some(a => a.allocationType === "Unassigned");
+  const verifyButton = document.querySelector("#verifyPurchaseButton");
+  if (verifyButton && !verifyButton.hidden) {
+    verifyButton.disabled = !balanced || hasUnassigned;
+    verifyButton.title = !balanced
+      ? "Receipt must balance before verification."
+      : (hasUnassigned ? "Assign every receipt item before verification." : "");
+  }
 }
 
 function collectPurchasePayload(allowPossibleDuplicate = false) {
@@ -1016,11 +1467,14 @@ function collectPurchasePayload(allowPossibleDuplicate = false) {
       id: a.id || null,
       projectId: a.projectId || null,
       taskId: a.taskId || null,
+      purchaseLineItemId: a.purchaseLineItemId || null,
       amount: Number(a.amount || 0),
       description: String(a.description || "").trim(),
       category: String(a.category || "").trim() || null,
       allocationType: a.allocationType || "Unassigned",
-      isIncludedInHomeSpend: a.allocationType === "PersonalExcluded" ? false : a.isIncludedInHomeSpend !== false,
+      isIncludedInHomeSpend: ["PersonalExcluded", "Unassigned"].includes(a.allocationType)
+        ? false
+        : a.isIncludedInHomeSpend !== false,
       notes: a.notes || null
     }))
   };
@@ -1062,13 +1516,67 @@ async function savePurchase(event, allowPossibleDuplicate = false) {
 async function verifyPurchase() {
   const id = Number(document.querySelector("#purchaseId").value || 0);
   if (!id) return;
+
+  clearPurchaseError();
+  hideDuplicateWarning();
+
+  const payload = collectPurchasePayload(false);
+  const allocated = allocationDraft.reduce((sum, a) => sum + Number(a.amount || 0), 0);
+  const difference = Number(payload.total || 0) - allocated;
+
+  if (Math.abs(difference) >= .005) {
+    showPurchaseError(`Receipt must balance before verification. Difference: ${moneyExact.format(difference)}.`);
+    return;
+  }
+
+  if (allocationDraft.some(a => a.allocationType === "Unassigned")) {
+    showPurchaseError("Assign every receipt item before verifying this receipt.");
+    return;
+  }
+
+  const button = document.querySelector("#verifyPurchaseButton");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Verifying…";
+  }
+
   try {
-    const response = await fetch(`/api/home/purchases/${id}/verify`, { method: "POST", headers: { "Accept":"application/json" } });
-    if (!response.ok) throw new Error(await readError(response));
+    const response = await fetch(`/api/home/purchases/${id}/verify`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (response.status === 409) {
+      const body = await response.json();
+
+      if (body.possibleDuplicate) {
+        showDuplicateWarning(body.duplicates || []);
+        return;
+      }
+
+      throw new Error(body.message || "Receipt could not be verified.");
+    }
+
+    if (!response.ok)
+      throw new Error(await readError(response));
+
+    await uploadStagedPurchaseReceipts(id);
     await loadDashboard();
     closePurchaseDialog();
-    showToast("Receipt verified.");
-  } catch (error) { showPurchaseError(error.message); }
+    showToast("Purchase saved and receipt verified.");
+  } catch (error) {
+    console.error(error);
+    showPurchaseError(error.message || "Could not verify receipt.");
+  } finally {
+    if (button) {
+      button.textContent = "Verify receipt";
+      updateReconciliation();
+    }
+  }
 }
 
 async function deletePurchase() {
@@ -1150,7 +1658,7 @@ function renderPurchaseReceipts(attachments) {
 
 async function handlePurchaseReceiptClick(event) {
   const view=event.target.closest("[data-view-purchase-receipt]");
-  if(view){ const attachmentId=Number(view.dataset.viewPurchaseReceipt); const p=state.purchases.find(x=>(x.attachments||[]).some(a=>a.id===attachmentId)); const a=p?.attachments.find(a=>a.id===attachmentId); if(a) openImageViewer(a); return; }
+  if(view){ const attachmentId=Number(view.dataset.viewPurchaseReceipt); const p=state.purchases.find(x=>(x.attachments||[]).some(a=>a.id===attachmentId)); const a=p?.attachments.find(a=>a.id===attachmentId); if(a) openImageViewer(a.id, a.fileName, a.contentType); return; }
   const del=event.target.closest("[data-delete-purchase-receipt]");
   if(!del) return;
   const id=Number(del.dataset.deletePurchaseReceipt);
@@ -1165,4 +1673,10 @@ async function handlePurchaseReceiptClick(event) {
 function closePurchaseDialog(){document.querySelector("#purchaseDialog")?.close();clearPurchaseError();hideDuplicateWarning();}
 function showPurchaseError(message){const e=document.querySelector("#purchaseFormError");e.textContent=message;e.hidden=false;}
 function clearPurchaseError(){const e=document.querySelector("#purchaseFormError");if(e){e.textContent="";e.hidden=true;}}
+function formatMoneyInput(value) {
+  if (value === "" || value == null) return "";
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(2) : "";
+}
+
 function nullableNumber(value){return value===""||value==null?null:Number(value);}

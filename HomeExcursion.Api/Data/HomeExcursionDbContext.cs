@@ -20,6 +20,7 @@ public class HomeExcursionDbContext : DbContext
     public DbSet<TaskArea> TaskAreas => Set<TaskArea>();
     public DbSet<Purchase> Purchases => Set<Purchase>();
     public DbSet<PurchaseAllocation> PurchaseAllocations => Set<PurchaseAllocation>();
+    public DbSet<PurchaseLineItem> PurchaseLineItems => Set<PurchaseLineItem>();
     public DbSet<PurchaseItemAlias> PurchaseItemAliases => Set<PurchaseItemAlias>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -234,6 +235,37 @@ public class HomeExcursionDbContext : DbContext
                 .HasFilter("[LegacyExpenseId] IS NOT NULL");
         });
 
+
+        modelBuilder.Entity<PurchaseLineItem>(entity =>
+        {
+            entity.ToTable("PurchaseLineItems");
+
+            entity.Property(i => i.ReceiptText)
+                .HasMaxLength(300)
+                .IsRequired();
+
+            entity.Property(i => i.DisplayName)
+                .HasMaxLength(300)
+                .IsRequired();
+
+            entity.Property(i => i.Quantity)
+                .HasPrecision(12, 3);
+
+            entity.Property(i => i.UnitPrice)
+                .HasPrecision(12, 2);
+
+            entity.Property(i => i.LineTotal)
+                .HasPrecision(12, 2);
+
+            entity.HasOne(i => i.Purchase)
+                .WithMany(p => p.LineItems)
+                .HasForeignKey(i => i.PurchaseId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(i => new { i.PurchaseId, i.SortOrder });
+        });
+
+
         modelBuilder.Entity<PurchaseItemAlias>(entity =>
         {
             entity.ToTable("PurchaseItemAliases");
@@ -295,9 +327,17 @@ public class HomeExcursionDbContext : DbContext
                 .HasForeignKey(a => a.TaskId)
                 .OnDelete(DeleteBehavior.NoAction);
 
+            entity.HasOne(a => a.PurchaseLineItem)
+                .WithOne(i => i.Allocation)
+                .HasForeignKey<PurchaseAllocation>(a => a.PurchaseLineItemId)
+                .OnDelete(DeleteBehavior.NoAction);
+
             entity.HasIndex(a => a.PurchaseId);
             entity.HasIndex(a => a.ProjectId);
             entity.HasIndex(a => a.TaskId);
+            entity.HasIndex(a => a.PurchaseLineItemId)
+                .IsUnique()
+                .HasFilter("[PurchaseLineItemId] IS NOT NULL");
             entity.HasIndex(a => a.LegacyExpenseId)
                 .IsUnique()
                 .HasFilter("[LegacyExpenseId] IS NOT NULL");

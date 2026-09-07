@@ -14,6 +14,8 @@ function renderTasks() {
 
   if (state.sort === "smart") {
     container.innerHTML = renderSmartGroups(tasks);
+  } else if (state.sort === "project") {
+    container.innerHTML = renderProjectGroups(tasks);
   } else if (state.sort === "area") {
     container.innerHTML = renderAreaGroups(tasks);
   } else {
@@ -21,6 +23,7 @@ function renderTasks() {
   }
 
   bindRenderedTaskEvents(container);
+  bindProjectGroupEvents(container);
 }
 
 function renderSmartGroups(tasks) {
@@ -37,6 +40,80 @@ function renderSmartGroups(tasks) {
   return groups.filter(([, items]) => items.length)
     .map(([label, items]) => `<div class="task-group-label">${label}</div>${items.map(renderTaskRow).join("")}`)
     .join("");
+}
+
+
+const collapsedTaskProjectGroups = new Set();
+
+function renderProjectGroups(tasks) {
+  const grouped = new Map();
+
+  for (const task of tasks) {
+    const projectId = task.projectId == null ? null : Number(task.projectId);
+    const key = projectId == null ? "none" : `project-${projectId}`;
+    const label = task.projectName || "No Project";
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        projectId,
+        label,
+        items: []
+      });
+    }
+
+    grouped.get(key).items.push(task);
+  }
+
+  const groups = [...grouped.values()]
+    .sort((a, b) => {
+      if (a.projectId == null) return -1;
+      if (b.projectId == null) return 1;
+      return a.label.localeCompare(b.label);
+    });
+
+  return groups.map(group => {
+    const openCount = group.items.filter(task => !isComplete(task) && !isCancelled(task)).length;
+    const inProgressCount = group.items.filter(isInProgress).length;
+    const completeCount = group.items.filter(isComplete).length;
+    const isCollapsed = collapsedTaskProjectGroups.has(group.key);
+
+    const summaryParts = [];
+    summaryParts.push(`${openCount} open`);
+    if (inProgressCount > 0) summaryParts.push(`${inProgressCount} in progress`);
+    if (completeCount > 0) summaryParts.push(`${completeCount} complete`);
+
+    return `<section class="task-project-group ${isCollapsed ? "collapsed" : ""}" data-task-project-group="${escapeAttribute(group.key)}">
+      <button type="button"
+              class="task-project-group-header"
+              data-toggle-task-project="${escapeAttribute(group.key)}"
+              aria-expanded="${isCollapsed ? "false" : "true"}">
+        <span class="task-project-caret" aria-hidden="true">${isCollapsed ? "▶" : "▼"}</span>
+        <span class="task-project-name">${escapeHtml(group.label)}</span>
+        <span class="task-project-summary">${escapeHtml(summaryParts.join(" · "))}</span>
+      </button>
+      <div class="task-project-group-body" ${isCollapsed ? "hidden" : ""}>
+        ${group.items.map(renderTaskRow).join("")}
+      </div>
+    </section>`;
+  }).join("");
+}
+
+function bindProjectGroupEvents(container) {
+  container.querySelectorAll("[data-toggle-task-project]").forEach(button => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.toggleTaskProject;
+      if (!key) return;
+
+      if (collapsedTaskProjectGroups.has(key)) {
+        collapsedTaskProjectGroups.delete(key);
+      } else {
+        collapsedTaskProjectGroups.add(key);
+      }
+
+      renderTasks();
+    });
+  });
 }
 
 function renderAreaGroups(tasks) {
@@ -126,6 +203,14 @@ function sortedTasks(tasks) {
   const list = [...tasks];
 
   switch (state.sort) {
+    case "project":
+      return list.sort((a, b) =>
+        projectRank(a, b) ||
+        terminalRank(a) - terminalRank(b) ||
+        smartRank(a) - smartRank(b) ||
+        dateRank(a) - dateRank(b) ||
+        a.sortOrder - b.sortOrder);
+
     case "area":
       return list.sort((a, b) =>
         areaRank(a, b) ||
@@ -147,6 +232,17 @@ function sortedTasks(tasks) {
     default:
       return list.sort((a, b) => smartRank(a) - smartRank(b) || dateRank(a) - dateRank(b) || priorityRank(a) - priorityRank(b) || a.sortOrder - b.sortOrder);
   }
+}
+
+
+function projectRank(a, b) {
+  const aa = (a.projectName || "").trim();
+  const bb = (b.projectName || "").trim();
+
+  if (!aa && bb) return -1;
+  if (aa && !bb) return 1;
+
+  return aa.localeCompare(bb);
 }
 
 function areaRank(a, b) {

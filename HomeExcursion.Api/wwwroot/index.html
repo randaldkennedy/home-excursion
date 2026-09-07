@@ -84,7 +84,10 @@
     <section class="content-grid">
       <div class="left-column-stack">
         <article class="panel projects-panel">
-          <div class="panel-heading"><div><span class="section-kicker">BIG STUFF</span><h2>Projects</h2></div></div>
+          <div class="panel-heading projects-heading">
+            <div><span class="section-kicker">BIG STUFF</span><h2>Projects</h2></div>
+            <button id="addProjectButton" class="primary-btn" type="button">+ Add project</button>
+          </div>
           <div id="projects" class="projects-list"><div class="loading">Loading projects…</div></div>
         </article>
 
@@ -119,6 +122,7 @@
 
             <select id="taskSort" class="sort-select" aria-label="Sort punch list">
               <option value="smart" selected>Smart sort</option>
+              <option value="project">Project</option>
               <option value="area">Area</option>
               <option value="priority">Priority</option>
               <option value="target-date">Target date</option>
@@ -179,14 +183,104 @@
       </div>
 
       <div class="modal-actions">
-        <input id="projectDocumentFile" type="file" accept="image/*,application/pdf" hidden>
+        <input id="projectDocumentFile" type="file" accept="image/*,application/pdf" multiple hidden>
         <span id="projectDocumentMessage" class="project-document-message"></span>
         <div class="modal-actions-right">
-          <button type="button" id="addProjectDocumentButton" class="secondary-btn">+ Add receipt / document</button>
+          <button type="button" id="editProjectButton" class="secondary-btn">Edit project</button>
+          <button type="button" id="addProjectDocumentButton" class="secondary-btn">+ Add photo / document</button>
           <button type="button" id="closeProjectDialogBottom" class="primary-btn">Done</button>
         </div>
       </div>
     </section>
+  </dialog>
+
+  <dialog id="projectEditorDialog" class="modal project-editor-modal">
+    <form id="projectForm" class="modal-card">
+      <div class="modal-head">
+        <div>
+          <span class="section-kicker">PROJECT</span>
+          <h2 id="projectEditorTitle">Add project</h2>
+        </div>
+        <button type="button" class="icon-btn" id="closeProjectEditorDialog" aria-label="Close">×</button>
+      </div>
+
+      <input type="hidden" id="projectEditorId">
+
+      <div class="form-grid">
+        <label class="field field-wide">
+          <span>Project name</span>
+          <input id="projectName" maxlength="200" required placeholder="Interior Painting">
+        </label>
+
+        <label class="field">
+          <span>Status</span>
+          <select id="projectStatus">
+            <option selected>Planned</option>
+            <option>Research</option>
+            <option>Getting Bids</option>
+            <option>Bid Received</option>
+            <option>Approved</option>
+            <option>Scheduled</option>
+            <option>In Progress</option>
+            <option>Waiting</option>
+            <option>On Hold</option>
+            <option>Ordered</option>
+            <option>Complete</option>
+            <option>Cancelled</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Purpose</span>
+          <input id="projectPurpose" maxlength="60" list="projectPurposeSuggestions" placeholder="Resale Improvement">
+        </label>
+        <datalist id="projectPurposeSuggestions">
+          <option value="Resale Improvement"></option>
+          <option value="Repair"></option>
+          <option value="Maintenance"></option>
+        </datalist>
+
+        <label class="field field-wide">
+          <span>Parent project</span>
+          <select id="projectParent"></select>
+          <small class="field-help">Leave blank for a top-level project.</small>
+        </label>
+
+        <label class="field">
+          <span>Estimated cost</span>
+          <input id="projectEstimatedCost" type="number" min="0" step="0.01" placeholder="Optional">
+        </label>
+
+        <label class="field">
+          <span>Committed cost</span>
+          <input id="projectCommittedCost" type="number" min="0" step="0.01" placeholder="Optional">
+        </label>
+
+        <label class="field">
+          <span>Contractor / vendor</span>
+          <input id="projectContractorName" maxlength="200" placeholder="Optional">
+        </label>
+
+        <label class="field">
+          <span>Target date</span>
+          <input id="projectTargetDate" type="date">
+        </label>
+
+        <label class="field field-wide">
+          <span>Notes</span>
+          <textarea id="projectNotes" rows="5" placeholder="Anything worth remembering…"></textarea>
+        </label>
+      </div>
+
+      <div id="projectFormError" class="form-error" hidden></div>
+
+      <div class="modal-actions">
+        <div class="modal-actions-right">
+          <button type="button" id="cancelProjectButton" class="secondary-btn">Cancel</button>
+          <button type="submit" id="saveProjectButton" class="primary-btn">Save project</button>
+        </div>
+      </div>
+    </form>
   </dialog>
 
   <dialog id="imageViewerDialog" class="image-viewer">
@@ -200,6 +294,7 @@
       </div>
       <div class="image-viewer-stage">
         <img id="imageViewerImage" alt="">
+        <iframe id="imageViewerPdf" class="image-viewer-pdf" title="PDF receipt" hidden></iframe>
       </div>
     </div>
   </dialog>
@@ -308,7 +403,19 @@
           </div>
         </div>
         <div class="purchase-allocation-side">
-          <div class="allocation-heading"><div><span class="section-kicker">WHERE IT WENT</span><h3>Allocations</h3></div><button type="button" id="addAllocationButton" class="secondary-btn">+ Add allocation</button></div>
+          <section id="purchaseLineItemSection" class="purchase-line-item-section" hidden>
+            <div class="allocation-heading">
+              <div><span class="section-kicker">RECEIPT ITEMS</span><h3>Assign items</h3></div>
+              <button type="button" id="readPurchaseLineItemsButton" class="secondary-btn" hidden>Read receipt items</button>
+            </div>
+            <p class="purchase-line-item-help">Assign each item to a project, task, Misc Household, Tools, or exclude it. Unassigned items stay out of Home Spent.</p>
+            <div id="purchaseLineItems" class="purchase-line-items"></div>
+          </section>
+          <div id="purchaseLineItemEmpty" class="purchase-line-item-empty" hidden>
+            <button type="button" id="readPurchaseLineItemsEmptyButton" class="secondary-btn">Read receipt items</button>
+            <small>Use the attached receipt to recover item-level detail.</small>
+          </div>
+          <div class="allocation-heading"><div><span class="section-kicker">WHERE IT WENT</span><h3>Other allocations</h3></div><button type="button" id="addAllocationButton" class="secondary-btn">+ Add allocation</button></div>
           <div id="purchaseAllocations" class="purchase-allocations"></div>
           <div class="reconciliation-card">
             <div><span>Receipt total</span><strong id="reconcileReceiptTotal">$0.00</strong></div>

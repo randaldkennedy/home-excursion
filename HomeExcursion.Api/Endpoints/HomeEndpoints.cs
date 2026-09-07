@@ -14,6 +14,8 @@ public static class HomeEndpoints
 
         group.MapGet("/dashboard", GetDashboardAsync);
 
+        group.MapPost("/projects", CreateProjectAsync);
+        group.MapPut("/projects/{id:int}", UpdateProjectAsync);
         group.MapGet("/projects/{id:int}/details", GetProjectDetailsAsync);
         group.MapGet("/projects/{id:int}/attachments", GetProjectAttachmentsAsync);
         group.MapPost("/projects/{id:int}/attachments", UploadProjectAttachmentAsync)
@@ -245,6 +247,204 @@ public static class HomeEndpoints
             maintenanceExpenses
         });
     }
+
+    private sealed record SaveProjectRequest(
+        int PropertyId,
+        int? ParentProjectId,
+        string Name,
+        string? Status,
+        string? Purpose,
+        decimal? EstimatedCost,
+        decimal? CommittedCost,
+        string? ContractorName,
+        DateOnly? TargetDate,
+        string? Notes);
+
+    private static async Task<IResult> CreateProjectAsync(
+        SaveProjectRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var validation = await ValidateProjectRequestAsync(
+            request,
+            null,
+            db,
+            cancellationToken);
+
+        if (validation is not null)
+            return validation;
+
+        var nextSortOrder = await db.Projects
+            .Where(p => p.PropertyId == request.PropertyId)
+            .Select(p => (int?)p.SortOrder)
+            .MaxAsync(cancellationToken) ?? 0;
+
+        var project = new HomeProject
+        {
+            PropertyId = request.PropertyId,
+            ParentProjectId = request.ParentProjectId,
+            Name = request.Name.Trim(),
+            Status = NormalizeProjectStatus(request.Status),
+            Purpose = Clean(request.Purpose),
+            EstimatedCost = request.EstimatedCost,
+            CommittedCost = request.CommittedCost,
+            ContractorName = Clean(request.ContractorName),
+            TargetDate = request.TargetDate,
+            Notes = Clean(request.Notes),
+            SortOrder = nextSortOrder + 10,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        if (string.Equals(project.Status, "Complete", StringComparison.OrdinalIgnoreCase))
+            project.CompletedAt = DateTime.UtcNow;
+
+        db.Projects.Add(project);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Created(
+            $"/api/home/projects/{project.Id}/details",
+            new { project.Id });
+    }
+
+    private static async Task<IResult> UpdateProjectAsync(
+        int id,
+        SaveProjectRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var project = await db.Projects
+            .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+
+        if (project is null)
+            return Results.NotFound();
+
+        if (project.PropertyId != request.PropertyId)
+        {
+            return Results.BadRequest(new
+            {
+                message = "A project cannot be moved to a different property."
+            });
+        }
+
+        var validation = await ValidateProjectRequestAsync(
+            request,
+            id,
+            db,
+            cancellationToken);
+
+        if (validation is not null)
+            return validation;
+
+        var oldStatus = project.Status;
+        var newStatus = NormalizeProjectStatus(request.Status);
+
+        project.ParentProjectId = request.ParentProjectId;
+        project.Name = request.Name.Trim();
+        project.Status = newStatus;
+        project.Purpose = Clean(request.Purpose);
+        project.EstimatedCost = request.EstimatedCost;
+        project.CommittedCost = request.CommittedCost;
+        project.ContractorName = Clean(request.ContractorName);
+        project.TargetDate = request.TargetDate;
+        project.Notes = Clean(request.Notes);
+
+        if (!string.Equals(oldStatus, "Complete", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(newStatus, "Complete", StringComparison.OrdinalIgnoreCase))
+        {
+            project.CompletedAt = DateTime.UtcNow;
+        }
+        else if (string.Equals(oldStatus, "Complete", StringComparison.OrdinalIgnoreCase) &&
+                 !string.Equals(newStatus, "Complete", StringComparison.OrdinalIgnoreCase))
+        {
+            project.CompletedAt = null;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(new { project.Id });
+    }
+
+    private static async Task<IResult?> ValidateProjectRequestAsync(
+        SaveProjectRequest request,
+        int? existingProjectId,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+            return Results.BadRequest(new { message = "Project name is required." });
+
+        if (request.Name.Trim().Length > 200)
+            return Results.BadRequest(new { message = "Project name must be 200 characters or fewer." });
+
+        if (Clean(request.Purpose)?.Length > 60)
+            return Results.BadRequest(new { message = "Purpose must be 60 characters or fewer." });
+
+        if (Clean(request.ContractorName)?.Length > 200)
+            return Results.BadRequest(new { message = "Contractor / vendor must be 200 characters or fewer." });
+
+        if (request.EstimatedCost < 0)
+            return Results.BadRequest(new { message = "Estimated cost cannot be negative." });
+
+        if (request.CommittedCost < 0)
+            return Results.BadRequest(new { message = "Committed cost cannot be negative." });
+
+        var propertyExists = await db.Properties
+            .AnyAsync(p => p.Id == request.PropertyId, cancellationToken);
+
+        if (!propertyExists)
+            return Results.BadRequest(new { message = "Property was not found." });
+
+        if (request.ParentProjectId is null)
+            return null;
+
+        if (existingProjectId == request.ParentProjectId)
+            return Results.BadRequest(new { message = "A project cannot be its own parent." });
+
+        var parentExists = await db.Projects.AnyAsync(
+            p => p.Id == request.ParentProjectId &&
+                 p.PropertyId == request.PropertyId,
+            cancellationToken);
+
+        if (!parentExists)
+            return Results.BadRequest(new { message = "Selected parent project does not belong to this property." });
+
+        if (existingProjectId is not null)
+        {
+            var descendants = await GetProjectScopeIdsAsync(
+                existingProjectId.Value,
+                request.PropertyId,
+                db,
+                cancellationToken);
+
+            descendants.Remove(existingProjectId.Value);
+
+            if (descendants.Contains(request.ParentProjectId.Value))
+            {
+                return Results.BadRequest(new
+                {
+                    message = "A project cannot be placed under one of its own child projects."
+                });
+            }
+        }
+
+        return null;
+    }
+
+    private static string NormalizeProjectStatus(string? value) =>
+        value?.Trim() switch
+        {
+            "Research" => "Research",
+            "Getting Bids" => "Getting Bids",
+            "Bid Received" => "Bid Received",
+            "Approved" => "Approved",
+            "Scheduled" => "Scheduled",
+            "In Progress" => "In Progress",
+            "Waiting" => "Waiting",
+            "On Hold" => "On Hold",
+            "Ordered" => "Ordered",
+            "Complete" => "Complete",
+            "Cancelled" => "Cancelled",
+            _ => "Planned"
+        };
 
     private static async Task<IResult> GetProjectDetailsAsync(
         int id,
