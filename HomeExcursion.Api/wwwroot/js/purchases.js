@@ -2,6 +2,79 @@ let selectedPurchaseIds = new Set();
 let purchaseTableSort = { key: "date", direction: "desc" };
 let quickReceiptLineItemsDraft = [];
 
+function receiptArithmeticIssues({ subtotal, tax, total, lineItems = [] }) {
+  const tolerance = 0.011;
+  const issues = [];
+  const s = subtotal == null || subtotal === "" ? null : Number(subtotal);
+  const t = tax == null || tax === "" ? null : Number(tax);
+  const totalNumber = total == null || total === "" ? null : Number(total);
+  const items = Array.isArray(lineItems) ? lineItems : [];
+
+  if (Number.isFinite(s) && Number.isFinite(t) && Number.isFinite(totalNumber)) {
+    const expectedTotal = Math.round((s + t) * 100) / 100;
+    if (Math.abs(expectedTotal - totalNumber) > tolerance) {
+      issues.push(`Subtotal plus tax is ${moneyExact.format(expectedTotal)}, but the receipt total is ${moneyExact.format(totalNumber)}.`);
+    }
+  }
+
+  items.forEach((item, index) => {
+    const quantity = item.quantity == null ? null : Number(item.quantity);
+    const unitPrice = item.unitPrice == null ? null : Number(item.unitPrice);
+    const lineTotal = item.lineTotal == null ? null : Number(item.lineTotal);
+
+    if (Number.isFinite(quantity) && Number.isFinite(unitPrice) && Number.isFinite(lineTotal)) {
+      const expectedLineTotal = Math.round(quantity * unitPrice * 100) / 100;
+      if (Math.abs(expectedLineTotal - lineTotal) > tolerance) {
+        const name = item.displayName || item.receiptText || item.description || `Item ${index + 1}`;
+        issues.push(`${name}: quantity × unit price is ${moneyExact.format(expectedLineTotal)}, but the line total is ${moneyExact.format(lineTotal)}.`);
+      }
+    }
+  });
+
+  if (Number.isFinite(s) && items.length && items.every(item => item.lineTotal != null && Number.isFinite(Number(item.lineTotal)))) {
+    const itemTotal = Math.round(items.reduce((sum, item) => sum + Number(item.lineTotal), 0) * 100) / 100;
+    if (Math.abs(itemTotal - s) > tolerance) {
+      issues.push(`Receipt items add to ${moneyExact.format(itemTotal)}, but the printed subtotal is ${moneyExact.format(s)}.`);
+    }
+  }
+
+  return issues;
+}
+
+function currentReceiptArithmeticIssues() {
+  const purchase = currentOpenPurchase();
+  if (!purchase?.lineItems?.length) return [];
+
+  return receiptArithmeticIssues({
+    subtotal: document.querySelector("#purchaseSubtotal")?.value,
+    tax: document.querySelector("#purchaseTax")?.value,
+    total: document.querySelector("#purchaseTotal")?.value,
+    lineItems: purchase.lineItems
+  });
+}
+
+function renderReceiptArithmeticWarning(issues) {
+  const summary = document.querySelector("#reconcileDifference")?.closest(".purchase-reconciliation");
+  if (!summary) return;
+
+  let warning = document.querySelector("#receiptArithmeticWarning");
+  if (!warning) {
+    warning = document.createElement("div");
+    warning.id = "receiptArithmeticWarning";
+    warning.className = "form-error";
+    warning.style.marginTop = "10px";
+    summary.insertAdjacentElement("afterend", warning);
+  }
+
+  if (issues?.length) {
+    warning.innerHTML = `<strong>Receipt math needs review.</strong> ${issues.map(issue => escapeHtml(issue)).join(" ")}`;
+    warning.hidden = false;
+  } else {
+    warning.innerHTML = "";
+    warning.hidden = true;
+  }
+}
+
 function bindPurchaseEditor() {
   document.querySelector("#addPurchaseButton")?.addEventListener("click", () => openPurchaseDialog());
   document.querySelector("#quickReceiptButton")?.addEventListener("click", openQuickReceiptDialog);
@@ -503,12 +576,23 @@ async function handleQuickReceiptFileSelection() {
         : null
     ].filter(Boolean);
 
+    const validationIssues = Array.isArray(result.validationIssues)
+      ? result.validationIssues
+      : receiptArithmeticIssues({
+          subtotal: result.subtotal,
+          tax: result.tax,
+          total: result.total,
+          lineItems: result.lineItems || []
+        });
+
     showQuickReceiptAnalysis(
-      "Receipt read",
-      found.length
-        ? `Filled ${found.join(", ")}. Give it a quick look before saving.`
-        : "I could not confidently fill any fields. Enter them manually.",
-      result.warnings || []);
+      validationIssues.length ? "Receipt needs review" : "Receipt read",
+      validationIssues.length
+        ? "The receipt was read, but the extracted item math does not match the printed totals. Save it if you want, but reconcile the items before verification."
+        : (found.length
+            ? `Filled ${found.join(", ")}. Give it a quick look before saving.`
+            : "I could not confidently fill any fields. Enter them manually."),
+      [...new Set([...(result.warnings || []), ...validationIssues])]);
 
     document.querySelector("#quickReceiptTotal")?.focus();
   } catch (error) {
@@ -1302,6 +1386,21 @@ async function readExistingPurchaseLineItems() {
       throw new Error(await readError(analysisResponse));
 
     const analysis = await analysisResponse.json();
+    const analysisIssues = Array.isArray(analysis.validationIssues)
+      ? analysis.validationIssues
+      : receiptArithmeticIssues({
+          subtotal: analysis.subtotal,
+          tax: analysis.tax,
+          total: analysis.total,
+          lineItems: analysis.lineItems || []
+        });
+
+    if (analysisIssues.length) {
+      throw new Error(
+        `Receipt item math does not reconcile. Nothing was changed. ${analysisIssues.join(" ")}`
+      );
+    }
+
     const resolved = await resolveQuickReceiptAliases(analysis.lineItems || []);
 
     if (!resolved.length)
@@ -1425,30 +1524,78 @@ function handleAllocationChange(event) {
   updateReconciliation();
 }
 
+function ensureReconcileUnassignedMetric() {
+  let valueElement = document.querySelector("#reconcileUnassigned");
+  if (valueElement) return valueElement;
+
+  const excludedValue = document.querySelector("#reconcileExcluded");
+  const differenceValue = document.querySelector("#reconcileDifference");
+  const excludedMetric = excludedValue?.parentElement;
+  const differenceMetric = differenceValue?.parentElement;
+
+  if (!excludedMetric || !differenceMetric) return null;
+
+  const unassignedMetric = excludedMetric.cloneNode(true);
+  valueElement = unassignedMetric.querySelector("#reconcileExcluded");
+
+  if (!valueElement) return null;
+
+  valueElement.id = "reconcileUnassigned";
+  valueElement.textContent = moneyExact.format(0);
+
+  for (const element of unassignedMetric.querySelectorAll("*")) {
+    if (element.children.length === 0 &&
+        /personal\s*\/\s*excluded/i.test(element.textContent || "")) {
+      element.textContent = "UNASSIGNED";
+      break;
+    }
+  }
+
+  differenceMetric.before(unassignedMetric);
+  return valueElement;
+}
+
 function updateReconciliation() {
   const total = Number(document.querySelector("#purchaseTotal")?.value || 0);
   const allocated = allocationDraft.reduce((sum,a) => sum + Number(a.amount || 0), 0);
   const home = allocationDraft.filter(a => a.allocationType !== "PersonalExcluded" && a.isIncludedInHomeSpend !== false)
     .reduce((sum,a) => sum + Number(a.amount || 0), 0);
-  const excluded = allocated - home;
+  const personalExcluded = allocationDraft
+    .filter(a => a.allocationType === "PersonalExcluded")
+    .reduce((sum,a) => sum + Number(a.amount || 0), 0);
+  const unassigned = allocationDraft
+    .filter(a => a.allocationType === "Unassigned")
+    .reduce((sum,a) => sum + Number(a.amount || 0), 0);
   const difference = total - allocated;
+
   document.querySelector("#reconcileReceiptTotal").textContent = moneyExact.format(total);
   document.querySelector("#reconcileAllocated").textContent = moneyExact.format(allocated);
   document.querySelector("#reconcileHomeSpend").textContent = moneyExact.format(home);
-  document.querySelector("#reconcileExcluded").textContent = moneyExact.format(excluded);
+  document.querySelector("#reconcileExcluded").textContent = moneyExact.format(personalExcluded);
+
+  const unassignedElement = ensureReconcileUnassignedMetric();
+  if (unassignedElement) {
+    unassignedElement.textContent = moneyExact.format(unassigned);
+  }
+
   const differenceElement = document.querySelector("#reconcileDifference");
   differenceElement.textContent = moneyExact.format(difference);
   const balanced = Math.abs(difference) < .005;
   differenceElement.classList.toggle("balanced", balanced);
   differenceElement.classList.toggle("unbalanced", !balanced);
 
+  const arithmeticIssues = currentReceiptArithmeticIssues();
+  renderReceiptArithmeticWarning(arithmeticIssues);
+
   const hasUnassigned = allocationDraft.some(a => a.allocationType === "Unassigned");
   const verifyButton = document.querySelector("#verifyPurchaseButton");
   if (verifyButton && !verifyButton.hidden) {
-    verifyButton.disabled = !balanced || hasUnassigned;
+    verifyButton.disabled = !balanced || hasUnassigned || arithmeticIssues.length > 0;
     verifyButton.title = !balanced
       ? "Receipt must balance before verification."
-      : (hasUnassigned ? "Assign every receipt item before verification." : "");
+      : (arithmeticIssues.length
+          ? "Receipt item math must reconcile before verification."
+          : (hasUnassigned ? "Assign every receipt item before verification." : ""));
   }
 }
 
@@ -1529,8 +1676,17 @@ async function verifyPurchase() {
     return;
   }
 
+  const arithmeticIssues = currentReceiptArithmeticIssues();
+  if (arithmeticIssues.length) {
+    showPurchaseError(`Receipt item math does not reconcile. ${arithmeticIssues.join(" ")}`);
+    return;
+  }
+
   if (allocationDraft.some(a => a.allocationType === "Unassigned")) {
-    showPurchaseError("Assign every receipt item before verifying this receipt.");
+    const unassigned = allocationDraft
+      .filter(a => a.allocationType === "Unassigned")
+      .reduce((sum, a) => sum + Number(a.amount || 0), 0);
+    showPurchaseError(`Assign the remaining ${moneyExact.format(unassigned)} before verifying this receipt.`);
     return;
   }
 

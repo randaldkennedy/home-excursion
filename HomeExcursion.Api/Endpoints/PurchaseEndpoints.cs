@@ -439,6 +439,21 @@ public static class PurchaseEndpoints
         if (request.Tax is not null && request.Tax < 0)
             return Results.BadRequest(new { message = "Receipt tax / fees cannot be negative." });
 
+        var arithmeticIssues = ValidateReceiptArithmetic(
+            request.Subtotal,
+            request.Tax,
+            request.Total,
+            request.LineItems);
+
+        if (arithmeticIssues.Count > 0)
+        {
+            return Results.BadRequest(new
+            {
+                message = "Receipt item math does not reconcile. Nothing was changed.",
+                validationIssues = arithmeticIssues
+            });
+        }
+
         // Reading receipt items is an explicit conversion from old whole-receipt
         // allocations to item-level reconciliation. Remove the old unlinked
         // allocations so the same dollars are not counted twice.
@@ -516,6 +531,77 @@ public static class PurchaseEndpoints
         }
 
         return null;
+    }
+
+    private static List<string> ValidateReceiptArithmetic(
+        decimal? subtotal,
+        decimal? tax,
+        decimal? total,
+        IReadOnlyCollection<SavePurchaseLineItemRequest>? lineItems)
+    {
+        const decimal tolerance = 0.01m;
+        var issues = new List<string>();
+        var items = lineItems ?? [];
+
+        if (subtotal.HasValue && tax.HasValue && total.HasValue)
+        {
+            var expectedTotal = Math.Round(subtotal.Value + tax.Value, 2);
+            if (Math.Abs(expectedTotal - total.Value) > tolerance)
+            {
+                issues.Add(
+                    $"Subtotal plus tax is {expectedTotal:C2}, but the receipt total is {total.Value:C2}.");
+            }
+        }
+
+        foreach (var item in items)
+        {
+            if (!item.Quantity.HasValue ||
+                !item.UnitPrice.HasValue ||
+                !item.LineTotal.HasValue)
+            {
+                continue;
+            }
+
+            var expectedLineTotal = Math.Round(item.Quantity.Value * item.UnitPrice.Value, 2);
+            if (Math.Abs(expectedLineTotal - item.LineTotal.Value) > tolerance)
+            {
+                var name = Clean(item.DisplayName) ?? Clean(item.ReceiptText) ?? "Receipt item";
+                issues.Add(
+                    $"{name}: quantity × unit price is {expectedLineTotal:C2}, but the line total is {item.LineTotal.Value:C2}.");
+            }
+        }
+
+        if (subtotal.HasValue &&
+            items.Count > 0 &&
+            items.All(item => item.LineTotal.HasValue))
+        {
+            var itemTotal = Math.Round(items.Sum(item => item.LineTotal!.Value), 2);
+            if (Math.Abs(itemTotal - subtotal.Value) > tolerance)
+            {
+                issues.Add(
+                    $"Receipt items add to {itemTotal:C2}, but the printed subtotal is {subtotal.Value:C2}.");
+            }
+        }
+
+        return issues;
+    }
+
+    private static List<string> ValidatePersistedReceiptArithmetic(
+        decimal? subtotal,
+        decimal? tax,
+        decimal total,
+        ICollection<PurchaseLineItem> lineItems)
+    {
+        var requestItems = lineItems
+            .Select(item => new SavePurchaseLineItemRequest(
+                item.ReceiptText,
+                item.DisplayName,
+                item.Quantity,
+                item.UnitPrice,
+                item.LineTotal))
+            .ToList();
+
+        return ValidateReceiptArithmetic(subtotal, tax, total, requestItems);
     }
 
     private static async Task<IResult> CreateQuickReceiptAsync(
@@ -956,6 +1042,24 @@ public static class PurchaseEndpoints
             {
                 message = "Assign every dollar before verifying this receipt."
             });
+        }
+
+        if (purchase.LineItems.Count > 0)
+        {
+            var arithmeticIssues = ValidatePersistedReceiptArithmetic(
+                purchase.Subtotal,
+                purchase.Tax,
+                purchase.Total,
+                purchase.LineItems);
+
+            if (arithmeticIssues.Count > 0)
+            {
+                return Results.Conflict(new
+                {
+                    message = "Receipt item math does not reconcile. Fix the receipt extraction before verifying.",
+                    validationIssues = arithmeticIssues
+                });
+            }
         }
 
         purchase.Status = "Verified";

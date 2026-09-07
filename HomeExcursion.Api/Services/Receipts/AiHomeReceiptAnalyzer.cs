@@ -223,28 +223,104 @@ public sealed class AiHomeReceiptAnalyzer : IHomeReceiptAnalyzer
             purchaseDate = parsedDate;
         }
 
+        var subtotal = NormalizeMoney(payload.Subtotal);
+        var tax = NormalizeMoney(payload.Tax);
+        var total = NormalizeMoney(payload.Total);
+        var lineItems = (payload.LineItems ?? [])
+            .Where(item =>
+                !string.IsNullOrWhiteSpace(item.Description) ||
+                item.LineTotal.HasValue)
+            .Select(item => new HomeReceiptLineItem
+            {
+                Description = Clean(item.Description),
+                Quantity = item.Quantity,
+                UnitPrice = NormalizeMoney(item.UnitPrice),
+                LineTotal = NormalizeMoney(item.LineTotal)
+            })
+            .ToList();
+
+        var validationIssues = ValidateArithmetic(subtotal, tax, total, lineItems);
+        var warnings = payload.Warnings ?? [];
+
+        foreach (var issue in validationIssues)
+        {
+            if (!warnings.Contains(issue, StringComparer.OrdinalIgnoreCase))
+                warnings.Add(issue);
+        }
+
         return new HomeReceiptAnalysisResult
         {
             Vendor = Clean(payload.Vendor),
             PurchaseDate = purchaseDate,
-            Subtotal = NormalizeMoney(payload.Subtotal),
-            Tax = NormalizeMoney(payload.Tax),
-            Total = NormalizeMoney(payload.Total),
-            LineItems = (payload.LineItems ?? [])
-                .Where(item =>
-                    !string.IsNullOrWhiteSpace(item.Description) ||
-                    item.LineTotal.HasValue)
-                .Select(item => new HomeReceiptLineItem
-                {
-                    Description = Clean(item.Description),
-                    Quantity = item.Quantity,
-                    UnitPrice = NormalizeMoney(item.UnitPrice),
-                    LineTotal = NormalizeMoney(item.LineTotal)
-                })
-                .ToList(),
+            Subtotal = subtotal,
+            Tax = tax,
+            Total = total,
+            LineItems = lineItems,
             RawText = Clean(payload.RawText),
-            Warnings = payload.Warnings ?? []
+            Warnings = warnings,
+            IsReconciled = validationIssues.Count == 0,
+            ValidationIssues = validationIssues
         };
+    }
+
+    private static List<string> ValidateArithmetic(
+        decimal? subtotal,
+        decimal? tax,
+        decimal? total,
+        IReadOnlyCollection<HomeReceiptLineItem> lineItems)
+    {
+        const decimal tolerance = 0.01m;
+        var issues = new List<string>();
+
+        if (subtotal.HasValue && tax.HasValue && total.HasValue)
+        {
+            var expectedTotal = Math.Round(subtotal.Value + tax.Value, 2);
+            if (Math.Abs(expectedTotal - total.Value) > tolerance)
+            {
+                issues.Add(
+                    $"Subtotal plus tax is {expectedTotal:C2}, but the receipt total is {total.Value:C2}.");
+            }
+        }
+
+        var numberedItems = lineItems
+            .Select((item, index) => new { Item = item, Number = index + 1 })
+            .ToList();
+
+        foreach (var entry in numberedItems)
+        {
+            var item = entry.Item;
+            if (!item.Quantity.HasValue ||
+                !item.UnitPrice.HasValue ||
+                !item.LineTotal.HasValue)
+            {
+                continue;
+            }
+
+            var expectedLineTotal = Math.Round(item.Quantity.Value * item.UnitPrice.Value, 2);
+            if (Math.Abs(expectedLineTotal - item.LineTotal.Value) > tolerance)
+            {
+                var name = string.IsNullOrWhiteSpace(item.Description)
+                    ? $"Item {entry.Number}"
+                    : item.Description;
+
+                issues.Add(
+                    $"{name}: quantity × unit price is {expectedLineTotal:C2}, but the line total is {item.LineTotal.Value:C2}.");
+            }
+        }
+
+        if (subtotal.HasValue &&
+            lineItems.Count > 0 &&
+            lineItems.All(item => item.LineTotal.HasValue))
+        {
+            var lineItemTotal = Math.Round(lineItems.Sum(item => item.LineTotal!.Value), 2);
+            if (Math.Abs(lineItemTotal - subtotal.Value) > tolerance)
+            {
+                issues.Add(
+                    $"Receipt items add to {lineItemTotal:C2}, but the printed subtotal is {subtotal.Value:C2}.");
+            }
+        }
+
+        return issues;
     }
 
     private static decimal? NormalizeMoney(decimal? value) =>

@@ -18,6 +18,8 @@ public sealed class HomeReceiptAnalysisResult
     public List<HomeReceiptLineItem> LineItems { get; init; } = [];
     public string? RawText { get; init; }
     public List<string> Warnings { get; init; } = [];
+    public bool IsReconciled { get; init; }
+    public List<string> ValidationIssues { get; init; } = [];
 }
 
 public sealed class HomeReceiptLineItem
