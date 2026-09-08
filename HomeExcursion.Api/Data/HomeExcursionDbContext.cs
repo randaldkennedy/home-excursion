@@ -13,6 +13,7 @@ public class HomeExcursionDbContext : DbContext
 
     public DbSet<Property> Properties => Set<Property>();
     public DbSet<HomeProject> Projects => Set<HomeProject>();
+    public DbSet<ProjectContractor> ProjectContractors => Set<ProjectContractor>();
     public DbSet<HomeTask> Tasks => Set<HomeTask>();
     public DbSet<Expense> Expenses => Set<Expense>();
     public DbSet<Vendor> Vendors => Set<Vendor>();
@@ -85,6 +86,37 @@ public class HomeExcursionDbContext : DbContext
             entity.HasIndex(p => new { p.PropertyId, p.Status });
             entity.HasIndex(p => p.ParentProjectId);
         });
+
+        modelBuilder.Entity<ProjectContractor>(entity =>
+        {
+            entity.ToTable("ProjectContractors");
+
+            entity.Property(c => c.Name)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(c => c.Status)
+                .HasMaxLength(40)
+                .IsRequired();
+
+            entity.Property(c => c.Phone)
+                .HasMaxLength(50);
+
+            entity.Property(c => c.BidAmount)
+                .HasPrecision(12, 2);
+
+            entity.Property(c => c.Notes)
+                .HasMaxLength(2000);
+
+            entity.HasOne(c => c.Project)
+                .WithMany(p => p.Contractors)
+                .HasForeignKey(c => c.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(c => new { c.ProjectId, c.SortOrder });
+            entity.HasIndex(c => new { c.ProjectId, c.IsSelected });
+        });
+
 
         modelBuilder.Entity<HomeTask>(entity =>
         {

@@ -81,6 +81,8 @@ function projectDateRank(project) {
 }
 
 let activeProjectId = null;
+let activeProjectContractorId = null;
+let expandedProjectContractorIds = new Set();
 
 function bindProjectDetails() {
   document.querySelector("#addProjectButton")?.addEventListener("click", () => openProjectEditor());
@@ -106,6 +108,12 @@ function bindProjectDetails() {
   });
   document.querySelector("#projectDetailBody")?.addEventListener("click", handleProjectDetailClick);
   document.querySelector("#projectDetailBody")?.addEventListener("change", handleProjectDetailChange);
+  document.querySelector("#projectDetailBody")?.addEventListener("keydown", event => {
+    const toggle = event.target.closest("[data-toggle-project-contractor]");
+    if (!toggle || !["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    toggle.click();
+  });
 }
 
 async function handleProjectDetailChange(event) {
@@ -306,6 +314,31 @@ async function saveProject(event) {
   }
 }
 
+function parseProjectCurrency(value) {
+  if (value == null) return null;
+
+  const cleaned = String(value)
+    .replace(/[$,\s]/g, "")
+    .trim();
+
+  if (!cleaned) return null;
+
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function formatProjectCurrency(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "";
+
+  return number.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+}
+
 function nullableProjectNumber(value) {
   if (value == null || String(value).trim() === "") return null;
   const parsed = Number(value);
@@ -369,6 +402,7 @@ async function loadProjectDetails(projectId) {
 
 function renderProjectDetails(detail) {
   const body = document.querySelector("#projectDetailBody");
+  body._projectDetail = detail;
   const p = detail.project;
   const completed = p.completedAt ? new Date(p.completedAt).toLocaleDateString() : null;
 
@@ -407,11 +441,13 @@ function renderProjectDetails(detail) {
     a.entityType === "HomeProject" && a.contentType?.startsWith("image/")
   );
   const documents = allAttachments.filter(a =>
+    a.entityType !== "ProjectContractor" &&
     !(a.entityType === "HomeProject" && a.contentType?.startsWith("image/"))
   );
 
   const photos = renderProjectPhotos(projectPhotos);
   const attachments = renderProjectDocuments(documents);
+  const contractors = renderProjectContractors(detail.contractors || [], allAttachments);
 
   body.innerHTML = `
     <div class="project-detail-summary">
@@ -431,6 +467,14 @@ function renderProjectDetails(detail) {
 
     ${p.notes ? `<p class="project-notes">${escapeHtml(p.notes)}</p>` : ""}
     ${children}
+
+    <div class="project-detail-section">
+      <div class="project-detail-section-head">
+        <h3>Contractors & bids</h3>
+        <button type="button" class="secondary-button" data-add-project-contractor>+ Add contractor</button>
+      </div>
+      ${contractors}
+    </div>
 
     <div class="project-detail-section">
       <div class="project-detail-section-head">
@@ -471,6 +515,380 @@ function projectStatusOptions(selectedStatus) {
   return statuses.map(status =>
     `<option value="${escapeAttribute(status)}" ${status === selectedStatus ? "selected" : ""}>${escapeHtml(status)}</option>`
   ).join("");
+}
+
+function projectContractorStatusOptions(selectedStatus) {
+  const statuses = [
+    "Considering",
+    "Contacted",
+    "Walkthrough Scheduled",
+    "Awaiting Bid",
+    "Bid Received",
+    "Revision Requested",
+    "Shortlisted",
+    "Selected",
+    "Declined",
+    "No Response"
+  ];
+
+  return statuses.map(status =>
+    `<option value="${escapeAttribute(status)}" ${status === selectedStatus ? "selected" : ""}>${escapeHtml(status)}</option>`
+  ).join("");
+}
+
+function renderProjectContractors(contractors, attachments) {
+  if (!contractors.length) {
+    return `<div class="empty">No contractors or bids added yet.</div>`;
+  }
+
+  return `<div class="project-contractor-grid">
+    <div class="project-contractor-grid-head"
+         style="display:grid;grid-template-columns:minmax(220px,1.6fr) minmax(150px,1fr) minmax(150px,1fr) minmax(150px,1fr) 90px;gap:12px;padding:8px 12px;font-weight:700;border-bottom:1px solid #ddd">
+      <div>Contractor</div>
+      <div>Phone</div>
+      <div>Status</div>
+      <div>Bid</div>
+      <div>Files</div>
+    </div>
+
+    ${contractors.map(contractor => {
+      const contractorFiles = attachments.filter(a =>
+        a.entityType === "ProjectContractor" &&
+        Number(a.entityId) === Number(contractor.id)
+      );
+
+      const expanded = expandedProjectContractorIds.has(Number(contractor.id));
+      const bid = contractor.bidAmount != null
+        ? money.format(Number(contractor.bidAmount))
+        : "—";
+
+      const selected = contractor.isSelected
+        ? `<span class="badge complete" style="margin-left:8px">Selected</span>`
+        : "";
+
+      const fileGallery = contractorFiles.length
+        ? `<div class="document-grid">
+            ${contractorFiles.map(attachment => {
+              const isImage = attachment.contentType?.startsWith("image/");
+              const isPdf = attachment.contentType === "application/pdf";
+              const preview = isImage
+                ? `<img src="/api/attachments/${attachment.id}/thumbnail"
+                        alt="${escapeAttribute(attachment.fileName)}">`
+                : `<span class="document-file-icon">${isPdf ? "PDF" : "📄"}</span>`;
+
+              return `<div class="document-card">
+                <button type="button"
+                        class="document-preview project-contractor-file-trigger"
+                        data-attachment-id="${attachment.id}"
+                        data-file-name="${escapeAttribute(attachment.fileName)}"
+                        data-content-type="${escapeAttribute(attachment.contentType || "")}">
+                  ${preview}
+                </button>
+                <div class="document-meta">
+                  <strong title="${escapeAttribute(attachment.fileName)}">${escapeHtml(attachment.fileName)}</strong>
+                  <span>${formatFileSize(attachment.fileSizeBytes)} · ${new Date(attachment.uploadedUtc).toLocaleDateString()}</span>
+                </div>
+                <button type="button"
+                        class="document-delete"
+                        data-delete-attachment-id="${attachment.id}"
+                        data-file-name="${escapeAttribute(attachment.fileName)}">Delete</button>
+              </div>`;
+            }).join("")}
+          </div>`
+        : `<div class="empty">No files attached to this contractor yet.</div>`;
+
+      return `
+        <div class="project-contractor-grid-row" style="border-bottom:1px solid #e6e0d8">
+          <button type="button"
+                  data-toggle-project-contractor="${contractor.id}"
+                  aria-expanded="${expanded ? "true" : "false"}"
+                  style="display:grid;grid-template-columns:minmax(220px,1.6fr) minmax(150px,1fr) minmax(150px,1fr) minmax(150px,1fr) 90px;gap:12px;width:100%;padding:12px;border:0;background:transparent;text-align:left;cursor:pointer;align-items:center">
+            <div><strong>${escapeHtml(contractor.name)}</strong>${selected}</div>
+            <div>${escapeHtml(contractor.phone || "—")}</div>
+            <div>${escapeHtml(contractor.status)}</div>
+            <div><strong>${escapeHtml(bid)}</strong></div>
+            <div>${contractorFiles.length} ${expanded ? "▴" : "▾"}</div>
+          </button>
+
+          ${expanded
+            ? `<div style="padding:4px 12px 16px 12px">
+                ${contractor.notes
+                  ? `<div class="project-detail-section" style="margin-bottom:14px">
+                      <h4 style="margin:0 0 6px">Notes</h4>
+                      <p class="project-notes" style="margin:0">${escapeHtml(contractor.notes)}</p>
+                    </div>`
+                  : ""}
+
+                <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px">
+                  <button type="button" class="secondary-button" data-add-contractor-file="${contractor.id}">+ Add files</button>
+                  <button type="button" class="secondary-button" data-edit-project-contractor="${contractor.id}">Edit</button>
+                  <button type="button" class="document-delete" data-delete-project-contractor="${contractor.id}">Delete</button>
+                </div>
+
+                ${fileGallery}
+              </div>`
+            : ""}
+        </div>`;
+    }).join("")}
+  </div>`;
+}
+
+function ensureProjectContractorEditor() {
+  let dialog = document.querySelector("#projectContractorDialog");
+  if (dialog) return dialog;
+
+  dialog = document.createElement("dialog");
+  dialog.id = "projectContractorDialog";
+  dialog.className = "modal project-dialog";
+  dialog.innerHTML = `
+    <form id="projectContractorForm" class="modal-card" method="dialog"
+          style="width:min(620px,calc(100vw - 32px));max-width:620px;padding:0;overflow:hidden">
+      <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px">
+        <div>
+          <div class="eyebrow">PROJECT CONTRACTOR</div>
+          <h2 id="projectContractorTitle" style="margin:.35rem 0 0">Add contractor</h2>
+        </div>
+        <button type="button" class="modal-close" id="closeProjectContractorDialog" aria-label="Close">×</button>
+      </div>
+
+      <div class="modal-body" style="display:grid;gap:18px;padding:22px 26px">
+        <div id="projectContractorError" class="form-error" hidden></div>
+
+        <label style="display:grid;gap:6px">
+          <span>Contractor / company</span>
+          <input id="projectContractorName" maxlength="200" required style="width:100%;box-sizing:border-box">
+        </label>
+
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px">
+          <label style="display:grid;gap:6px">
+            <span>Phone</span>
+            <input id="projectContractorPhone"
+                   type="tel"
+                   maxlength="50"
+                   style="width:100%;box-sizing:border-box">
+          </label>
+
+          <label style="display:grid;gap:6px">
+            <span>Status</span>
+            <select id="projectContractorStatus" style="width:100%;box-sizing:border-box"></select>
+          </label>
+        </div>
+
+        <label style="display:grid;gap:6px">
+          <span>Bid amount</span>
+          <input id="projectContractorBidAmount"
+                   type="text"
+                   inputmode="decimal"
+                   autocomplete="off"
+                   placeholder="$0.00"
+                   style="width:100%;box-sizing:border-box">
+        </label>
+
+        <label style="display:grid;gap:6px">
+          <span>Notes</span>
+          <textarea id="projectContractorNotes"
+                    rows="4"
+                    maxlength="2000"
+                    style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
+        </label>
+
+        <label style="display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border:1px solid #ddd;border-radius:10px">
+          <input id="projectContractorSelected" type="checkbox" style="margin-top:3px">
+          <span>
+            <strong style="display:block">Awarded / selected contractor</strong>
+            <small style="display:block;margin-top:2px;opacity:.75">
+              Check this only after you decide this is the contractor who will do the project.
+            </small>
+          </span>
+        </label>
+      </div>
+
+      <div class="modal-actions" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 26px">
+        <button type="button" class="secondary-button" id="cancelProjectContractorButton">Cancel</button>
+        <button type="submit" class="primary-button" id="saveProjectContractorButton">Save contractor</button>
+      </div>
+    </form>`;
+
+  document.body.appendChild(dialog);
+
+  dialog.querySelector("#closeProjectContractorDialog")?.addEventListener("click", closeProjectContractorEditor);
+  dialog.querySelector("#cancelProjectContractorButton")?.addEventListener("click", closeProjectContractorEditor);
+  dialog.querySelector("#projectContractorForm")?.addEventListener("submit", saveProjectContractor);
+
+  const bidInput = dialog.querySelector("#projectContractorBidAmount");
+  bidInput?.addEventListener("focus", () => {
+    const amount = parseProjectCurrency(bidInput.value);
+    bidInput.value = amount == null ? "" : amount.toFixed(2);
+    bidInput.select();
+  });
+  bidInput?.addEventListener("blur", () => {
+    const amount = parseProjectCurrency(bidInput.value);
+    bidInput.value = amount == null ? "" : formatProjectCurrency(amount);
+  });
+
+  dialog.addEventListener("click", event => {
+    if (event.target === dialog) closeProjectContractorEditor();
+  });
+
+  return dialog;
+}
+
+function openProjectContractorEditor(contractor = null) {
+  if (!activeProjectId) return;
+
+  const dialog = ensureProjectContractorEditor();
+  activeProjectContractorId = contractor?.id ? Number(contractor.id) : null;
+
+  dialog.querySelector("#projectContractorTitle").textContent =
+    contractor ? "Edit contractor" : "Add contractor";
+  dialog.querySelector("#projectContractorName").value = contractor?.name || "";
+  dialog.querySelector("#projectContractorPhone").value = contractor?.phone || "";
+  dialog.querySelector("#projectContractorStatus").innerHTML =
+    projectContractorStatusOptions(contractor?.status || "Considering");
+  dialog.querySelector("#projectContractorBidAmount").value =
+    contractor?.bidAmount != null
+      ? formatProjectCurrency(Number(contractor.bidAmount))
+      : "";
+  dialog.querySelector("#projectContractorNotes").value =
+    contractor?.notes || "";
+  dialog.querySelector("#projectContractorSelected").checked =
+    contractor?.isSelected === true;
+
+  const error = dialog.querySelector("#projectContractorError");
+  error.hidden = true;
+  error.textContent = "";
+
+  dialog.showModal();
+  window.setTimeout(() => dialog.querySelector("#projectContractorName")?.focus(), 30);
+}
+
+function closeProjectContractorEditor() {
+  document.querySelector("#projectContractorDialog")?.close();
+  activeProjectContractorId = null;
+}
+
+async function saveProjectContractor(event) {
+  event.preventDefault();
+
+  const dialog = ensureProjectContractorEditor();
+  const error = dialog.querySelector("#projectContractorError");
+  const name = dialog.querySelector("#projectContractorName")?.value.trim();
+
+  if (!name) {
+    error.textContent = "Contractor name is required.";
+    error.hidden = false;
+    return;
+  }
+
+  const isSelected = dialog.querySelector("#projectContractorSelected")?.checked === true;
+  const selectedStatus = dialog.querySelector("#projectContractorStatus")?.value || "Considering";
+
+  const payload = {
+    name,
+    phone: dialog.querySelector("#projectContractorPhone")?.value.trim() || null,
+    status: isSelected ? "Selected" : selectedStatus,
+    bidAmount: parseProjectCurrency(dialog.querySelector("#projectContractorBidAmount")?.value),
+    notes: dialog.querySelector("#projectContractorNotes")?.value.trim() || null,
+    isSelected
+  };
+
+  const button = dialog.querySelector("#saveProjectContractorButton");
+  button.disabled = true;
+  button.textContent = "Saving…";
+
+  try {
+    const url = activeProjectContractorId
+      ? `/api/home/projects/${activeProjectId}/contractors/${activeProjectContractorId}`
+      : `/api/home/projects/${activeProjectId}/contractors`;
+
+    const response = await fetch(url, {
+      method: activeProjectContractorId ? "PUT" : "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) throw new Error(await readError(response));
+
+    const wasEdit = !!activeProjectContractorId;
+    closeProjectContractorEditor();
+    await loadDashboard();
+    await loadProjectDetails(activeProjectId);
+    showToast(wasEdit ? "Contractor updated." : "Contractor added.");
+  } catch (err) {
+    console.error(err);
+    error.textContent = err.message || "Could not save contractor.";
+    error.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Save contractor";
+  }
+}
+
+async function deleteProjectContractor(contractorId) {
+  if (!activeProjectId || !contractorId) return;
+
+  const detail = document.querySelector("#projectDetailBody")?._projectDetail;
+  const contractor = detail?.contractors?.find(c => Number(c.id) === Number(contractorId));
+  const name = contractor?.name || "this contractor";
+
+  if (!confirm(`Delete "${name}" and its attached files?`)) return;
+
+  try {
+    const response = await fetch(
+      `/api/home/projects/${activeProjectId}/contractors/${contractorId}`,
+      { method: "DELETE" }
+    );
+
+    if (!response.ok) throw new Error(await readError(response));
+
+    await loadDashboard();
+    await loadProjectDetails(activeProjectId);
+    showToast("Contractor deleted.");
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "Could not delete contractor.");
+  }
+}
+
+function chooseProjectContractorFiles(contractorId) {
+  if (!activeProjectId || !contractorId) return;
+
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*,application/pdf";
+  input.multiple = true;
+  input.addEventListener("change", async () => {
+    const files = [...(input.files || [])];
+    if (!files.length) return;
+
+    try {
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const response = await fetch(
+          `/api/home/projects/${activeProjectId}/contractors/${contractorId}/attachments`,
+          {
+            method: "POST",
+            body: formData
+          }
+        );
+
+        if (!response.ok) throw new Error(await readError(response));
+      }
+
+      await loadProjectDetails(activeProjectId);
+      showToast(files.length === 1 ? "Contractor file added." : `${files.length} contractor files added.`);
+    } catch (error) {
+      console.error(error);
+      showToast(error.message || "Could not upload contractor file.");
+    }
+  });
+
+  input.click();
 }
 
 function renderProjectPhotos(attachments) {
@@ -567,7 +985,49 @@ async function uploadProjectDocument() {
 }
 
 async function handleProjectDetailClick(event) {
-  const fileButton = event.target.closest(".project-photo-trigger, .project-file-trigger");
+  const contractorToggle = event.target.closest("[data-toggle-project-contractor]");
+  if (contractorToggle) {
+    const contractorId = Number(contractorToggle.dataset.toggleProjectContractor);
+    if (expandedProjectContractorIds.has(contractorId)) {
+      expandedProjectContractorIds.delete(contractorId);
+    } else {
+      expandedProjectContractorIds.add(contractorId);
+    }
+
+    const detail = document.querySelector("#projectDetailBody")?._projectDetail;
+    if (detail) renderProjectDetails(detail);
+    return;
+  }
+
+  const addContractorButton = event.target.closest("[data-add-project-contractor]");
+  if (addContractorButton) {
+    openProjectContractorEditor();
+    return;
+  }
+
+  const editContractorButton = event.target.closest("[data-edit-project-contractor]");
+  if (editContractorButton) {
+    const contractorId = Number(editContractorButton.dataset.editProjectContractor);
+    const detail = editContractorButton.closest("#projectDetailBody")?._projectDetail;
+    const contractor = detail?.contractors?.find(c => Number(c.id) === contractorId);
+    if (contractor) openProjectContractorEditor(contractor);
+    return;
+  }
+
+  const deleteContractorButton = event.target.closest("[data-delete-project-contractor]");
+  if (deleteContractorButton) {
+    await deleteProjectContractor(Number(deleteContractorButton.dataset.deleteProjectContractor));
+    return;
+  }
+
+  const addContractorFileButton = event.target.closest("[data-add-contractor-file]");
+  if (addContractorFileButton) {
+    const contractorId = Number(addContractorFileButton.dataset.addContractorFile);
+    chooseProjectContractorFiles(contractorId);
+    return;
+  }
+
+  const fileButton = event.target.closest(".project-photo-trigger, .project-file-trigger, .project-contractor-file-trigger");
   if (fileButton) {
     openImageViewer(
       Number(fileButton.dataset.attachmentId),

@@ -4,6 +4,7 @@ using HomeExcursion.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace HomeExcursion.Api.Migrations.Home
 {
     [DbContext(typeof(HomeExcursionDbContext))]
-    partial class HomeExcursionDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260908213936_AddProjectContractors")]
+    partial class AddProjectContractors
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -269,10 +272,6 @@ namespace HomeExcursion.Api.Migrations.Home
                     b.Property<string>("Notes")
                         .HasMaxLength(2000)
                         .HasColumnType("nvarchar(2000)");
-
-                    b.Property<string>("Phone")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
 
                     b.Property<int>("ProjectId")
                         .HasColumnType("int");

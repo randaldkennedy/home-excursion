@@ -21,6 +21,12 @@ public static class HomeEndpoints
         group.MapPost("/projects/{id:int}/attachments", UploadProjectAttachmentAsync)
             .DisableAntiforgery();
 
+        group.MapPost("/projects/{id:int}/contractors", CreateProjectContractorAsync);
+        group.MapPut("/projects/{id:int}/contractors/{contractorId:int}", UpdateProjectContractorAsync);
+        group.MapDelete("/projects/{id:int}/contractors/{contractorId:int}", DeleteProjectContractorAsync);
+        group.MapPost("/projects/{id:int}/contractors/{contractorId:int}/attachments", UploadProjectContractorAttachmentAsync)
+            .DisableAntiforgery();
+
         group.MapPurchaseEndpoints();
 
         // Legacy Expense endpoints remain during the Purchase transition.
@@ -516,8 +522,31 @@ public static class HomeEndpoints
             })
             .ToListAsync(cancellationToken);
 
+        var contractors = await db.ProjectContractors
+            .AsNoTracking()
+            .Where(c => c.ProjectId == id)
+            .OrderByDescending(c => c.IsSelected)
+            .ThenBy(c => c.SortOrder)
+            .ThenBy(c => c.Name)
+            .Select(c => new
+            {
+                c.Id,
+                c.ProjectId,
+                c.Name,
+                c.Status,
+                c.Phone,
+                c.BidAmount,
+                c.Notes,
+                c.IsSelected,
+                c.SortOrder,
+                c.CreatedAt,
+                c.UpdatedAt
+            })
+            .ToListAsync(cancellationToken);
+
         var purchaseEntityIds = expenses.Select(e => e.PurchaseId.ToString()).ToHashSet();
         var projectEntityIds = scopeIds.Select(x => x.ToString()).ToHashSet();
+        var contractorEntityIds = contractors.Select(c => c.Id.ToString()).ToHashSet();
 
         var attachments = await platformDb.Attachments
             .AsNoTracking()
@@ -527,7 +556,8 @@ public static class HomeEndpoints
                 a.App == "home" &&
                 (
                     (a.EntityType == "HomeProject" && a.EntityId != null && projectEntityIds.Contains(a.EntityId)) ||
-                    (a.EntityType == "Purchase" && a.EntityId != null && purchaseEntityIds.Contains(a.EntityId))
+                    (a.EntityType == "Purchase" && a.EntityId != null && purchaseEntityIds.Contains(a.EntityId)) ||
+                    (a.EntityType == "ProjectContractor" && a.EntityId != null && contractorEntityIds.Contains(a.EntityId))
                 ))
             .OrderByDescending(a => a.UploadedUtc)
             .Select(a => new
@@ -549,6 +579,7 @@ public static class HomeEndpoints
         {
             project,
             children,
+            contractors,
             expenses,
             attachments,
             actualSpent,
@@ -674,6 +705,327 @@ public static class HomeEndpoints
             Category = "project-document",
             EntityType = "HomeProject",
             EntityId = id.ToString(),
+            FileName = Path.GetFileName(file.FileName),
+            ContentType = file.ContentType ?? "application/octet-stream",
+            BlobName = stored.BlobName,
+            FileSizeBytes = stored.FileSizeBytes,
+            UploadedUtc = DateTime.UtcNow,
+            IsActive = true
+        };
+
+        try
+        {
+            platformDb.Attachments.Add(attachment);
+            await platformDb.SaveChangesAsync(cancellationToken);
+        }
+        catch
+        {
+            await storage.DeleteAsync(stored.BlobName, cancellationToken);
+            throw;
+        }
+
+        if (isImage)
+        {
+            await AttachmentThumbnailHelper.EnsureCreatedAsync(
+                attachment.BlobName,
+                storage,
+                cancellationToken);
+        }
+
+        return Results.Created(
+            $"/api/attachments/{attachment.Id}",
+            new
+            {
+                attachment.Id,
+                attachment.FileName,
+                attachment.ContentType,
+                attachment.FileSizeBytes,
+                attachment.UploadedUtc
+            });
+    }
+
+    private sealed record SaveProjectContractorRequest(
+        string Name,
+        string? Status,
+        string? Phone,
+        decimal? BidAmount,
+        string? Notes,
+        bool IsSelected);
+
+    private static async Task<IResult> CreateProjectContractorAsync(
+        int id,
+        SaveProjectContractorRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var project = await db.Projects
+            .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+
+        if (project is null)
+            return Results.NotFound();
+
+        var validation = ValidateProjectContractorRequest(request);
+        if (validation is not null)
+            return validation;
+
+        var nextSortOrder = await db.ProjectContractors
+            .Where(c => c.ProjectId == id)
+            .Select(c => (int?)c.SortOrder)
+            .MaxAsync(cancellationToken) ?? 0;
+
+        if (request.IsSelected)
+        {
+            var selected = await db.ProjectContractors
+                .Where(c => c.ProjectId == id && c.IsSelected)
+                .ToListAsync(cancellationToken);
+
+            foreach (var existing in selected)
+            {
+                existing.IsSelected = false;
+                existing.UpdatedAt = DateTime.UtcNow;
+            }
+        }
+
+        var contractor = new ProjectContractor
+        {
+            ProjectId = id,
+            Name = request.Name.Trim(),
+            Status = NormalizeProjectContractorStatus(request.Status),
+            Phone = Clean(request.Phone),
+            BidAmount = request.BidAmount,
+            Notes = Clean(request.Notes),
+            IsSelected = request.IsSelected,
+            SortOrder = nextSortOrder + 10,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+
+        if (contractor.IsSelected)
+            project.ContractorName = contractor.Name;
+
+        db.ProjectContractors.Add(contractor);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Created(
+            $"/api/home/projects/{id}/contractors/{contractor.Id}",
+            new { contractor.Id });
+    }
+
+    private static async Task<IResult> UpdateProjectContractorAsync(
+        int id,
+        int contractorId,
+        SaveProjectContractorRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var contractor = await db.ProjectContractors
+            .Include(c => c.Project)
+            .FirstOrDefaultAsync(
+                c => c.Id == contractorId && c.ProjectId == id,
+                cancellationToken);
+
+        if (contractor is null)
+            return Results.NotFound();
+
+        var validation = ValidateProjectContractorRequest(request);
+        if (validation is not null)
+            return validation;
+
+        var wasSelected = contractor.IsSelected;
+
+        if (request.IsSelected)
+        {
+            var selected = await db.ProjectContractors
+                .Where(c => c.ProjectId == id && c.Id != contractorId && c.IsSelected)
+                .ToListAsync(cancellationToken);
+
+            foreach (var existing in selected)
+            {
+                existing.IsSelected = false;
+                existing.UpdatedAt = DateTime.UtcNow;
+            }
+        }
+
+        contractor.Name = request.Name.Trim();
+        contractor.Status = NormalizeProjectContractorStatus(request.Status);
+        contractor.Phone = Clean(request.Phone);
+        contractor.BidAmount = request.BidAmount;
+        contractor.Notes = Clean(request.Notes);
+        contractor.IsSelected = request.IsSelected;
+        contractor.UpdatedAt = DateTime.UtcNow;
+
+        if (contractor.IsSelected)
+        {
+            contractor.Project.ContractorName = contractor.Name;
+        }
+        else if (wasSelected &&
+                 string.Equals(
+                     contractor.Project.ContractorName,
+                     contractor.Name,
+                     StringComparison.OrdinalIgnoreCase))
+        {
+            contractor.Project.ContractorName = null;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(new { contractor.Id });
+    }
+
+    private static async Task<IResult> DeleteProjectContractorAsync(
+        int id,
+        int contractorId,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        IAttachmentStorageService storage,
+        CancellationToken cancellationToken)
+    {
+        var contractor = await db.ProjectContractors
+            .Include(c => c.Project)
+            .FirstOrDefaultAsync(
+                c => c.Id == contractorId && c.ProjectId == id,
+                cancellationToken);
+
+        if (contractor is null)
+            return Results.NotFound();
+
+        var attachments = await platformDb.Attachments
+            .Where(a =>
+                a.IsActive &&
+                a.App == "home" &&
+                a.EntityType == "ProjectContractor" &&
+                a.EntityId == contractorId.ToString())
+            .ToListAsync(cancellationToken);
+
+        foreach (var attachment in attachments)
+        {
+            await storage.DeleteAsync(attachment.BlobName, cancellationToken);
+            platformDb.Attachments.Remove(attachment);
+        }
+
+        if (attachments.Count > 0)
+            await platformDb.SaveChangesAsync(cancellationToken);
+
+        if (contractor.IsSelected &&
+            string.Equals(
+                contractor.Project.ContractorName,
+                contractor.Name,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            contractor.Project.ContractorName = null;
+        }
+
+        db.ProjectContractors.Remove(contractor);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.NoContent();
+    }
+
+    private static IResult? ValidateProjectContractorRequest(
+        SaveProjectContractorRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+            return Results.BadRequest(new { message = "Contractor name is required." });
+
+        if (request.Name.Trim().Length > 200)
+            return Results.BadRequest(new { message = "Contractor name must be 200 characters or fewer." });
+
+        if (Clean(request.Phone)?.Length > 50)
+            return Results.BadRequest(new { message = "Phone number must be 50 characters or fewer." });
+
+        if (request.BidAmount < 0)
+            return Results.BadRequest(new { message = "Bid amount cannot be negative." });
+
+        if (Clean(request.Notes)?.Length > 2000)
+            return Results.BadRequest(new { message = "Contractor notes must be 2,000 characters or fewer." });
+
+        return null;
+    }
+
+    private static string NormalizeProjectContractorStatus(string? value) =>
+        value?.Trim() switch
+        {
+            "Contacted" => "Contacted",
+            "Walkthrough Scheduled" => "Walkthrough Scheduled",
+            "Awaiting Bid" => "Awaiting Bid",
+            "Bid Received" => "Bid Received",
+            "Revision Requested" => "Revision Requested",
+            "Shortlisted" => "Shortlisted",
+            "Selected" => "Selected",
+            "Declined" => "Declined",
+            "No Response" => "No Response",
+            _ => "Considering"
+        };
+
+    private static async Task<IResult> UploadProjectContractorAttachmentAsync(
+        int id,
+        int contractorId,
+        IFormFile file,
+        HttpContext httpContext,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        IAttachmentStorageService storage,
+        CancellationToken cancellationToken)
+    {
+        const long MaxUploadBytes = 20L * 1024L * 1024L;
+
+        if (file.Length <= 0)
+            return Results.BadRequest(new { message = "Choose a file to upload." });
+
+        if (file.Length > MaxUploadBytes)
+            return Results.BadRequest(new { message = "Files must be 20 MB or smaller." });
+
+        var isImage = file.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true;
+        var isPdf = string.Equals(file.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase);
+
+        if (!isImage && !isPdf)
+            return Results.BadRequest(new { message = "Contractor files currently support images and PDF files." });
+
+        var contractor = await db.ProjectContractors
+            .AsNoTracking()
+            .Where(c => c.Id == contractorId && c.ProjectId == id)
+            .Select(c => new
+            {
+                c.Id,
+                HouseholdId = c.Project.Property.HouseholdId
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (contractor is null)
+            return Results.NotFound();
+
+        var userId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!userId.HasValue)
+            return Results.Unauthorized();
+
+        var hasAccess = await platformDb.HouseholdMembers
+            .AnyAsync(
+                hm => hm.UserId == userId.Value && hm.HouseholdId == contractor.HouseholdId,
+                cancellationToken);
+
+        if (!hasAccess)
+            return Results.NotFound();
+
+        StoredAttachment stored;
+        await using (var stream = file.OpenReadStream())
+        {
+            stored = await storage.UploadAsync(
+                contractor.HouseholdId,
+                "home",
+                "project-contractor-document",
+                Path.GetFileName(file.FileName),
+                file.ContentType ?? "application/octet-stream",
+                stream,
+                cancellationToken);
+        }
+
+        var attachment = new Attachment
+        {
+            HouseholdId = contractor.HouseholdId,
+            UploadedByUserId = userId.Value,
+            App = "home",
+            Category = "project-contractor-document",
+            EntityType = "ProjectContractor",
+            EntityId = contractorId.ToString(),
             FileName = Path.GetFileName(file.FileName),
             ContentType = file.ContentType ?? "application/octet-stream",
             BlobName = stored.BlobName,

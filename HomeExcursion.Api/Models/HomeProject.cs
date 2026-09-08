@@ -38,5 +38,7 @@ public class HomeProject
 
     public ICollection<HomeTask> Tasks { get; set; } = new List<HomeTask>();
 
+    public ICollection<ProjectContractor> Contractors { get; set; } = new List<ProjectContractor>();
+
     public ICollection<Expense> Expenses { get; set; } = new List<Expense>();
 }
