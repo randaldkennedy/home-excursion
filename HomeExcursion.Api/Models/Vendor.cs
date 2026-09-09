@@ -26,6 +26,8 @@ public class Vendor
 
     public bool IsActive { get; set; } = true;
 
+    public bool IsContractor { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public ICollection<VendorContact> Contacts { get; set; } = new List<VendorContact>();

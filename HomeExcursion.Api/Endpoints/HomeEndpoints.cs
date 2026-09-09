@@ -287,7 +287,7 @@ public static class HomeEndpoints
     {
         var contractors = await db.Vendors
             .AsNoTracking()
-            .Where(v => v.IsActive)
+            .Where(v => v.IsActive && v.IsContractor)
             .OrderBy(v => v.Name)
             .Select(v => new
             {
@@ -344,6 +344,7 @@ public static class HomeEndpoints
             PostalCode = Clean(request.PostalCode),
             Notes = Clean(request.Notes),
             IsActive = true,
+            IsContractor = true,
             CreatedAt = DateTime.UtcNow
         };
 
@@ -379,6 +380,7 @@ public static class HomeEndpoints
         vendor.State = Clean(request.State);
         vendor.PostalCode = Clean(request.PostalCode);
         vendor.Notes = Clean(request.Notes);
+        vendor.IsContractor = true;
 
         var linkedRows = await db.ProjectContractors
             .Where(c => c.VendorId == vendorId)

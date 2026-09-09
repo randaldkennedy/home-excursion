@@ -91,6 +91,19 @@
           <div id="projects" class="projects-list"><div class="loading">Loading projects…</div></div>
         </article>
 
+        <article class="panel contractors-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="section-kicker">WHO WE CALL</span>
+              <h2>Contractors</h2>
+            </div>
+            <button id="addContractorButton" class="primary-btn" type="button">+ Add contractor</button>
+          </div>
+          <div id="contractors" class="projects-list">
+            <div class="loading">Loading contractors…</div>
+          </div>
+        </article>
+
         <article class="panel maintenance-panel">
           <div class="panel-heading">
             <div>
@@ -218,13 +231,14 @@
             <option selected>Planned</option>
             <option>Research</option>
             <option>Getting Bids</option>
-            <option>Bid Received</option>
             <option>Approved</option>
             <option>Scheduled</option>
             <option>In Progress</option>
             <option>Waiting</option>
             <option>On Hold</option>
             <option>Ordered</option>
+            <option>Closing / Punch List</option>
+            <option>Closed</option>
             <option>Complete</option>
             <option>Cancelled</option>
           </select>
@@ -254,11 +268,6 @@
         <label class="field">
           <span>Committed cost</span>
           <input id="projectCommittedCost" type="number" min="0" step="0.01" placeholder="Optional">
-        </label>
-
-        <label class="field">
-          <span>Contractor / vendor</span>
-          <input id="projectContractorName" maxlength="200" placeholder="Optional">
         </label>
 
         <label class="field">

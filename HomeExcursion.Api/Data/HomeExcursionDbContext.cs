@@ -233,6 +233,7 @@ public class HomeExcursionDbContext : DbContext
                 .HasMaxLength(20);
 
             entity.HasIndex(v => v.Name);
+            entity.HasIndex(v => new { v.IsContractor, v.IsActive, v.Name });
         });
 
         modelBuilder.Entity<VendorContact>(entity =>
