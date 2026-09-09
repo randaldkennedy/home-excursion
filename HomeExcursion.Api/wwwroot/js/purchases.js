@@ -2,79 +2,6 @@ let selectedPurchaseIds = new Set();
 let purchaseTableSort = { key: "date", direction: "desc" };
 let quickReceiptLineItemsDraft = [];
 
-function receiptArithmeticIssues({ subtotal, tax, total, lineItems = [] }) {
-  const tolerance = 0.011;
-  const issues = [];
-  const s = subtotal == null || subtotal === "" ? null : Number(subtotal);
-  const t = tax == null || tax === "" ? null : Number(tax);
-  const totalNumber = total == null || total === "" ? null : Number(total);
-  const items = Array.isArray(lineItems) ? lineItems : [];
-
-  if (Number.isFinite(s) && Number.isFinite(t) && Number.isFinite(totalNumber)) {
-    const expectedTotal = Math.round((s + t) * 100) / 100;
-    if (Math.abs(expectedTotal - totalNumber) > tolerance) {
-      issues.push(`Subtotal plus tax is ${moneyExact.format(expectedTotal)}, but the receipt total is ${moneyExact.format(totalNumber)}.`);
-    }
-  }
-
-  items.forEach((item, index) => {
-    const quantity = item.quantity == null ? null : Number(item.quantity);
-    const unitPrice = item.unitPrice == null ? null : Number(item.unitPrice);
-    const lineTotal = item.lineTotal == null ? null : Number(item.lineTotal);
-
-    if (Number.isFinite(quantity) && Number.isFinite(unitPrice) && Number.isFinite(lineTotal)) {
-      const expectedLineTotal = Math.round(quantity * unitPrice * 100) / 100;
-      if (Math.abs(expectedLineTotal - lineTotal) > tolerance) {
-        const name = item.displayName || item.receiptText || item.description || `Item ${index + 1}`;
-        issues.push(`${name}: quantity × unit price is ${moneyExact.format(expectedLineTotal)}, but the line total is ${moneyExact.format(lineTotal)}.`);
-      }
-    }
-  });
-
-  if (Number.isFinite(s) && items.length && items.every(item => item.lineTotal != null && Number.isFinite(Number(item.lineTotal)))) {
-    const itemTotal = Math.round(items.reduce((sum, item) => sum + Number(item.lineTotal), 0) * 100) / 100;
-    if (Math.abs(itemTotal - s) > tolerance) {
-      issues.push(`Receipt items add to ${moneyExact.format(itemTotal)}, but the printed subtotal is ${moneyExact.format(s)}.`);
-    }
-  }
-
-  return issues;
-}
-
-function currentReceiptArithmeticIssues() {
-  const purchase = currentOpenPurchase();
-  if (!purchase?.lineItems?.length) return [];
-
-  return receiptArithmeticIssues({
-    subtotal: document.querySelector("#purchaseSubtotal")?.value,
-    tax: document.querySelector("#purchaseTax")?.value,
-    total: document.querySelector("#purchaseTotal")?.value,
-    lineItems: purchase.lineItems
-  });
-}
-
-function renderReceiptArithmeticWarning(issues) {
-  const summary = document.querySelector("#reconcileDifference")?.closest(".purchase-reconciliation");
-  if (!summary) return;
-
-  let warning = document.querySelector("#receiptArithmeticWarning");
-  if (!warning) {
-    warning = document.createElement("div");
-    warning.id = "receiptArithmeticWarning";
-    warning.className = "form-error";
-    warning.style.marginTop = "10px";
-    summary.insertAdjacentElement("afterend", warning);
-  }
-
-  if (issues?.length) {
-    warning.innerHTML = `<strong>Receipt math needs review.</strong> ${issues.map(issue => escapeHtml(issue)).join(" ")}`;
-    warning.hidden = false;
-  } else {
-    warning.innerHTML = "";
-    warning.hidden = true;
-  }
-}
-
 function bindPurchaseEditor() {
   document.querySelector("#addPurchaseButton")?.addEventListener("click", () => openPurchaseDialog());
   document.querySelector("#quickReceiptButton")?.addEventListener("click", openQuickReceiptDialog);
@@ -163,7 +90,9 @@ function bindPurchaseNavigation() {
 
 async function loadPurchases() {
   try {
-    const response = await fetch("/api/home/purchases", { headers: { "Accept": "application/json" } });
+    const propertyId = Number(state.data?.property?.id || 0);
+    const query = propertyId ? `?propertyId=${encodeURIComponent(propertyId)}` : "";
+    const response = await fetch(`/api/home/purchases${query}`, { headers: { "Accept": "application/json" } });
     if (!response.ok) throw new Error(await readError(response));
     state.purchases = await response.json();
     rebuildPurchaseAllocations();
@@ -576,23 +505,12 @@ async function handleQuickReceiptFileSelection() {
         : null
     ].filter(Boolean);
 
-    const validationIssues = Array.isArray(result.validationIssues)
-      ? result.validationIssues
-      : receiptArithmeticIssues({
-          subtotal: result.subtotal,
-          tax: result.tax,
-          total: result.total,
-          lineItems: result.lineItems || []
-        });
-
     showQuickReceiptAnalysis(
-      validationIssues.length ? "Receipt needs review" : "Receipt read",
-      validationIssues.length
-        ? "The receipt was read, but the extracted item math does not match the printed totals. Save it if you want, but reconcile the items before verification."
-        : (found.length
-            ? `Filled ${found.join(", ")}. Give it a quick look before saving.`
-            : "I could not confidently fill any fields. Enter them manually."),
-      [...new Set([...(result.warnings || []), ...validationIssues])]);
+      "Receipt read",
+      found.length
+        ? `Filled ${found.join(", ")}. Give it a quick look before saving.`
+        : "I could not confidently fill any fields. Enter them manually.",
+      result.warnings || []);
 
     document.querySelector("#quickReceiptTotal")?.focus();
   } catch (error) {
@@ -959,6 +877,546 @@ function clearQuickReceiptError() {
 let allocationDraft = [];
 let allocationSequence = 0;
 
+
+let manualReceiptDraft = [];
+let manualReceiptPurchaseId = null;
+
+function ensureManualReceiptDialog() {
+  let dialog = document.querySelector("#manualReceiptDialog");
+  if (dialog) return dialog;
+
+  dialog = document.createElement("dialog");
+  dialog.id = "manualReceiptDialog";
+  dialog.className = "modal purchase-modal";
+
+  dialog.innerHTML = `
+    <form id="manualReceiptForm" class="modal-card manual-receipt-card" method="dialog">
+      <div class="modal-head">
+        <div>
+          <span class="section-kicker">MANUAL RECEIPT REVIEW</span>
+          <h2>Fix unreadable receipt</h2>
+        </div>
+        <button type="button" class="icon-btn" data-close-manual-receipt aria-label="Close">×</button>
+      </div>
+
+      <div class="manual-receipt-body">
+        <div id="manualReceiptError" class="form-error" hidden></div>
+
+        <div class="manual-receipt-explainer">
+          Use the printed totals on the receipt and correct whatever the receipt reader missed.
+          The final math still has to reconcile before Home Excursion will accept it.
+        </div>
+
+        <div class="manual-receipt-totals">
+          <label class="field">
+            <span>Subtotal</span>
+            <input id="manualReceiptSubtotal" type="text" inputmode="decimal" placeholder="0.00">
+          </label>
+          <label class="field">
+            <span>Tax / fees</span>
+            <input id="manualReceiptTax" type="text" inputmode="decimal" placeholder="0.00">
+          </label>
+          <label class="field">
+            <span>Receipt total</span>
+            <input id="manualReceiptTotal" type="text" inputmode="decimal" placeholder="0.00">
+          </label>
+        </div>
+
+        <div class="manual-receipt-items-heading">
+          <div>
+            <strong>Receipt items</strong>
+            <span>Edit an extracted item or add a missing/unreadable line.</span>
+          </div>
+          <button id="addManualReceiptItemButton" type="button" class="secondary-btn">+ Add missing item</button>
+        </div>
+
+        <div id="manualReceiptItems" class="manual-receipt-items"></div>
+
+        <div class="manual-receipt-math">
+          <div><span>Items</span><strong id="manualReceiptItemTotal">$0.00</strong></div>
+          <div><span>Subtotal difference</span><strong id="manualReceiptSubtotalDifference">$0.00</strong></div>
+          <div><span>Total difference</span><strong id="manualReceiptTotalDifference">$0.00</strong></div>
+        </div>
+
+        <label class="field">
+          <span>Why are you verifying manually? *</span>
+          <textarea id="manualReceiptReason" rows="3" maxlength="500"
+                    placeholder="Receipt partially unreadable; printed subtotal, tax and total confirmed from original image."></textarea>
+        </label>
+
+        <div class="manual-receipt-note">
+          Correct the amounts and assign every item here. After saving, the receipt will be ready for
+          <strong>Verify receipt</strong>.
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="secondary-btn" data-close-manual-receipt>Cancel</button>
+        <button id="saveManualReceiptButton" type="submit" class="primary-btn">Save corrections</button>
+      </div>
+    </form>`;
+
+  document.body.appendChild(dialog);
+
+  dialog.querySelectorAll("[data-close-manual-receipt]").forEach(button =>
+    button.addEventListener("click", () => dialog.close())
+  );
+
+  dialog.querySelector("#addManualReceiptItemButton")?.addEventListener("click", () => {
+    manualReceiptDraft.push({
+      _key: Date.now() + Math.random(),
+      sourceLineItemId: null,
+      receiptText: "Unreadable / unparsed receipt item",
+      displayName: "Unreadable / unparsed receipt item",
+      lineTotal: "",
+      destination: "unassigned"
+    });
+    renderManualReceiptItems();
+  });
+
+  dialog.querySelector("#manualReceiptItems")?.addEventListener("input", event => {
+    const row = event.target.closest("[data-manual-item-key]");
+    if (!row) return;
+    const item = manualReceiptDraft.find(x => String(x._key) === row.dataset.manualItemKey);
+    if (!item) return;
+
+    if (event.target.matches("[data-manual-item-name]")) {
+      item.displayName = event.target.value;
+      item.receiptText = event.target.value || "Manual receipt item";
+    } else if (event.target.matches("[data-manual-item-amount]")) {
+      item.lineTotal = event.target.value;
+    } else if (event.target.matches("[data-manual-item-destination]")) {
+      item.destination = event.target.value || "unassigned";
+    }
+    updateManualReceiptMath();
+  });
+
+  dialog.querySelector("#manualReceiptItems")?.addEventListener("click", event => {
+    const remove = event.target.closest("[data-remove-manual-item]");
+    if (!remove) return;
+    manualReceiptDraft = manualReceiptDraft.filter(
+      x => String(x._key) !== remove.dataset.removeManualItem
+    );
+    renderManualReceiptItems();
+  });
+
+  ["#manualReceiptSubtotal", "#manualReceiptTax", "#manualReceiptTotal"].forEach(selector => {
+    dialog.querySelector(selector)?.addEventListener("input", updateManualReceiptMath);
+    dialog.querySelector(selector)?.addEventListener("blur", event => {
+      const value = parseManualMoney(event.target.value);
+      event.target.value = value == null ? "" : value.toFixed(2);
+      updateManualReceiptMath();
+    });
+  });
+
+  dialog.querySelector("#manualReceiptForm")?.addEventListener("submit", saveManualReceiptCorrections);
+  return dialog;
+}
+
+function parseManualMoney(value) {
+  const text = String(value ?? "").replace(/[$,\s]/g, "").trim();
+  if (!text) return null;
+  const amount = Number(text);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function openManualReceiptDialog() {
+  const purchase = currentOpenPurchase();
+  if (!purchase?.id) return;
+
+  manualReceiptPurchaseId = purchase.id;
+  manualReceiptDraft = (purchase.lineItems || []).map(item => {
+    const allocation = allocationDraft.find(
+      a => Number(a.purchaseLineItemId) === Number(item.id)
+    );
+
+    return {
+      _key: item.id || `${Date.now()}-${Math.random()}`,
+      sourceLineItemId: item.id || null,
+      receiptText: item.receiptText || item.displayName || "Receipt item",
+      displayName: item.displayName || item.receiptText || "Receipt item",
+      lineTotal: item.lineTotal ?? lineItemAmount(item),
+      destination: receiptItemDestinationValue(allocation)
+    };
+  });
+
+  const dialog = ensureManualReceiptDialog();
+  dialog.querySelector("#manualReceiptSubtotal").value =
+    purchase.subtotal == null ? "" : Number(purchase.subtotal).toFixed(2);
+  dialog.querySelector("#manualReceiptTax").value =
+    purchase.tax == null ? "" : Number(purchase.tax).toFixed(2);
+  dialog.querySelector("#manualReceiptTotal").value =
+    Number(purchase.total || 0).toFixed(2);
+  dialog.querySelector("#manualReceiptReason").value = "";
+
+  const error = dialog.querySelector("#manualReceiptError");
+  error.hidden = true;
+  error.textContent = "";
+
+  renderManualReceiptItems();
+  dialog.showModal();
+}
+
+
+function manualReceiptDestinationOptions(selectedValue) {
+  const option = (value, label) =>
+    `<option value="${escapeAttribute(value)}" ${selectedValue === value ? "selected" : ""}>${escapeHtml(label)}</option>`;
+
+  const projectOptionsHtml = [...(state.data?.projects || [])]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(p => option(`project:${p.id}`, p.name))
+    .join("");
+
+  const taskOptionsHtml = [...(state.data?.tasks || [])]
+    .sort((a, b) => {
+      const ap = a.projectName || "";
+      const bp = b.projectName || "";
+      return ap.localeCompare(bp) || a.title.localeCompare(b.title);
+    })
+    .map(t => {
+      const prefix = t.projectName ? `${t.projectName} · ` : "";
+      return option(`task:${t.id}`, `${prefix}${t.title}`);
+    })
+    .join("");
+
+  return [
+    option("unassigned", "Unassigned"),
+    option("misc", "Misc Household"),
+    option("tools", "Tools"),
+    option("excluded", "Personal / Excluded"),
+    projectOptionsHtml ? `<optgroup label="Projects">${projectOptionsHtml}</optgroup>` : "",
+    taskOptionsHtml ? `<optgroup label="Tasks">${taskOptionsHtml}</optgroup>` : ""
+  ].join("");
+}
+
+function allocationFromManualDestination(destination, item) {
+  const allocation = {
+    id: null,
+    projectId: null,
+    taskId: null,
+    purchaseLineItemId: item.id,
+    amount: lineItemAmount(item),
+    description: item.displayName || item.receiptText || "Receipt item",
+    category: null,
+    allocationType: "Unassigned",
+    isIncludedInHomeSpend: false,
+    notes: null
+  };
+
+  const value = destination || "unassigned";
+
+  if (value === "misc") {
+    allocation.allocationType = "GeneralHome";
+    allocation.category = "Misc Household";
+    allocation.isIncludedInHomeSpend = true;
+  } else if (value === "tools") {
+    allocation.allocationType = "GeneralHome";
+    allocation.category = "Tools";
+    allocation.isIncludedInHomeSpend = true;
+  } else if (value === "excluded") {
+    allocation.allocationType = "PersonalExcluded";
+  } else if (value.startsWith("project:")) {
+    allocation.projectId = Number(value.split(":")[1]);
+    allocation.allocationType = "Project";
+    allocation.isIncludedInHomeSpend = true;
+  } else if (value.startsWith("task:")) {
+    allocation.taskId = Number(value.split(":")[1]);
+    const task = state.data?.tasks?.find(t => Number(t.id) === allocation.taskId);
+    allocation.projectId = task?.projectId ?? null;
+    allocation.allocationType = "Task";
+    allocation.isIncludedInHomeSpend = true;
+  }
+
+  return allocation;
+}
+
+function renderManualReceiptItems() {
+  const container = document.querySelector("#manualReceiptItems");
+  if (!container) return;
+
+  if (!manualReceiptDraft.length) {
+    container.innerHTML = `<div class="empty">No receipt items yet. Add the missing/unreadable amount.</div>`;
+    updateManualReceiptMath();
+    return;
+  }
+
+  container.innerHTML = manualReceiptDraft.map(item => `
+    <div class="manual-receipt-item" data-manual-item-key="${escapeAttribute(String(item._key))}">
+      <input data-manual-item-name
+             maxlength="300"
+             value="${escapeAttribute(item.displayName || item.receiptText || "")}"
+             placeholder="Receipt item">
+      <input data-manual-item-amount
+             type="text"
+             inputmode="decimal"
+             value="${escapeAttribute(item.lineTotal ?? "")}"
+             placeholder="0.00">
+      <select data-manual-item-destination>
+        ${manualReceiptDestinationOptions(item.destination || "unassigned")}
+      </select>
+      <button type="button"
+              class="icon-btn"
+              data-remove-manual-item="${escapeAttribute(String(item._key))}"
+              aria-label="Remove item">×</button>
+    </div>
+  `).join("");
+
+  updateManualReceiptMath();
+}
+
+function updateManualReceiptMath() {
+  const subtotal = parseManualMoney(document.querySelector("#manualReceiptSubtotal")?.value) ?? 0;
+  const tax = parseManualMoney(document.querySelector("#manualReceiptTax")?.value) ?? 0;
+  const total = parseManualMoney(document.querySelector("#manualReceiptTotal")?.value) ?? 0;
+  const itemTotal = manualReceiptDraft.reduce(
+    (sum, item) => sum + (parseManualMoney(item.lineTotal) ?? 0),
+    0
+  );
+
+  const subtotalDifference = Math.round((subtotal - itemTotal) * 100) / 100;
+  const totalDifference = Math.round((total - subtotal - tax) * 100) / 100;
+
+  const set = (selector, value, balanced) => {
+    const el = document.querySelector(selector);
+    if (!el) return;
+    el.textContent = moneyExact.format(value);
+    el.classList.toggle("balanced", balanced);
+    el.classList.toggle("unbalanced", !balanced);
+  };
+
+  document.querySelector("#manualReceiptItemTotal").textContent = moneyExact.format(itemTotal);
+  set("#manualReceiptSubtotalDifference", subtotalDifference, Math.abs(subtotalDifference) < .005);
+  set("#manualReceiptTotalDifference", totalDifference, Math.abs(totalDifference) < .005);
+}
+
+
+function cloneManualAllocation(allocation) {
+  return {
+    id: null,
+    projectId: allocation?.projectId || null,
+    taskId: allocation?.taskId || null,
+    purchaseLineItemId: null,
+    amount: Number(allocation?.amount || 0),
+    description: String(allocation?.description || "").trim(),
+    category: allocation?.category || null,
+    allocationType: allocation?.allocationType || "Unassigned",
+    isIncludedInHomeSpend: allocation?.isIncludedInHomeSpend !== false,
+    notes: allocation?.notes || null
+  };
+}
+
+function manualCorrectionAllocationSnapshot(purchase) {
+  const byLineItemId = new Map(
+    (allocationDraft || [])
+      .filter(a => a.purchaseLineItemId)
+      .map(a => [Number(a.purchaseLineItemId), cloneManualAllocation(a)])
+  );
+
+  const nonLineItem = (allocationDraft || [])
+    .filter(a => !a.purchaseLineItemId)
+    .filter(a =>
+      a.allocationType === "TaxFee" ||
+      (a.allocationType !== "Unassigned" &&
+       !String(a.description || "").toLowerCase().includes("receipt remainder")))
+    .map(a => cloneManualAllocation(a));
+
+  return { byLineItemId, nonLineItem };
+}
+
+function remapManualCorrectionAllocations(updatedPurchase, snapshot) {
+  const updatedItems = updatedPurchase?.lineItems || [];
+  const remapped = [];
+
+  manualReceiptDraft.forEach((draftItem, index) => {
+    const updatedItem = updatedItems[index];
+    if (!updatedItem) return;
+
+    const prior = draftItem.sourceLineItemId
+      ? snapshot.byLineItemId.get(Number(draftItem.sourceLineItemId))
+      : null;
+
+    if ((draftItem.destination || "unassigned") !== "unassigned") {
+      remapped.push(allocationFromManualDestination(draftItem.destination, updatedItem));
+    } else if (prior && prior.allocationType !== "Unassigned") {
+      remapped.push({
+        ...prior,
+        purchaseLineItemId: updatedItem.id,
+        amount: lineItemAmount(updatedItem),
+        description: updatedItem.displayName || updatedItem.receiptText || prior.description || "Receipt item"
+      });
+    } else {
+      remapped.push(allocationFromManualDestination("unassigned", updatedItem));
+    }
+  });
+
+  const tax = Number(updatedPurchase?.tax || 0);
+  const oldTax = snapshot.nonLineItem.find(a => a.allocationType === "TaxFee");
+
+  if (tax > 0) {
+    remapped.push({
+      ...(oldTax || {
+        id: null,
+        projectId: null,
+        taskId: null,
+        category: "Tax / Fees",
+        allocationType: "TaxFee",
+        isIncludedInHomeSpend: true,
+        notes: null
+      }),
+      purchaseLineItemId: null,
+      amount: tax,
+      description: "Tax / fees",
+      category: "Tax / Fees",
+      allocationType: "TaxFee",
+      isIncludedInHomeSpend: true
+    });
+  }
+
+  snapshot.nonLineItem
+    .filter(a => a.allocationType !== "TaxFee")
+    .forEach(a => remapped.push(a));
+
+  return remapped;
+}
+
+async function saveManualReceiptCorrections(event) {
+  event.preventDefault();
+
+  const dialog = ensureManualReceiptDialog();
+  const error = dialog.querySelector("#manualReceiptError");
+  const button = dialog.querySelector("#saveManualReceiptButton");
+
+  const subtotal = parseManualMoney(dialog.querySelector("#manualReceiptSubtotal").value);
+  const tax = parseManualMoney(dialog.querySelector("#manualReceiptTax").value);
+  const total = parseManualMoney(dialog.querySelector("#manualReceiptTotal").value);
+  const reason = dialog.querySelector("#manualReceiptReason").value.trim();
+
+  const lineItems = manualReceiptDraft.map(item => ({
+    receiptText: String(item.receiptText || item.displayName || "Manual receipt item").trim(),
+    displayName: String(item.displayName || item.receiptText || "Manual receipt item").trim(),
+    quantity: null,
+    unitPrice: null,
+    lineTotal: parseManualMoney(item.lineTotal)
+  }));
+
+  const itemTotal = lineItems.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
+
+  if (subtotal == null || tax == null || total == null) {
+    error.textContent = "Enter subtotal, tax / fees and receipt total.";
+    error.hidden = false;
+    return;
+  }
+
+  if (!reason) {
+    error.textContent = "Enter a short reason for manual verification.";
+    error.hidden = false;
+    return;
+  }
+
+  if (lineItems.some(item => !item.displayName || item.lineTotal == null || item.lineTotal < 0)) {
+    error.textContent = "Every receipt item needs a description and valid amount.";
+    error.hidden = false;
+    return;
+  }
+
+  if (manualReceiptDraft.some(item => !item.destination || item.destination === "unassigned")) {
+    error.textContent = "Assign every receipt item before saving manual verification.";
+    error.hidden = false;
+    return;
+  }
+
+  if (Math.abs(itemTotal - subtotal) >= .005) {
+    error.textContent =
+      `Receipt items must add to the subtotal. Difference: ${moneyExact.format(subtotal - itemTotal)}.`;
+    error.hidden = false;
+    return;
+  }
+
+  if (Math.abs((subtotal + tax) - total) >= .005) {
+    error.textContent =
+      `Subtotal + tax must equal the receipt total. Difference: ${moneyExact.format(total - subtotal - tax)}.`;
+    error.hidden = false;
+    return;
+  }
+
+  error.hidden = true;
+  button.disabled = true;
+  button.textContent = "Saving…";
+
+  try {
+    const current = currentOpenPurchase();
+    const allocationSnapshot = manualCorrectionAllocationSnapshot(current);
+
+    const lineItemResponse = await fetch(`/api/home/purchases/${manualReceiptPurchaseId}/line-items`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({
+        subtotal,
+        tax,
+        total,
+        lineItems
+      })
+    });
+
+    if (!lineItemResponse.ok)
+      throw new Error(await readError(lineItemResponse));
+
+    // The line-item endpoint rebuilds receipt items, so reload once to get the new IDs
+    // before restoring assignments to the corrected rows.
+    await loadPurchases();
+    const correctedPurchase = state.purchases.find(
+      p => Number(p.id) === Number(manualReceiptPurchaseId)
+    );
+
+    if (!correctedPurchase)
+      throw new Error("Corrected purchase could not be reloaded.");
+
+    const correctedAllocations =
+      remapManualCorrectionAllocations(correctedPurchase, allocationSnapshot);
+
+    const existingNotes = String(current?.notes || "").trim();
+    const marker = `Manual receipt verification: ${reason}`;
+    const notes = existingNotes
+      ? (existingNotes.includes(marker) ? existingNotes : `${existingNotes}\n${marker}`)
+      : marker;
+
+    const noteResponse = await fetch(`/api/home/purchases/${manualReceiptPurchaseId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({
+        propertyId: state.data.property.id,
+        vendorId: null,
+        vendor: document.querySelector("#purchaseVendor")?.value.trim() || null,
+        purchaseDate: document.querySelector("#purchaseDate")?.value || null,
+        subtotal,
+        tax,
+        total,
+        notes,
+        allowPossibleDuplicate: true,
+        allocations: correctedAllocations
+      })
+    });
+
+    if (!noteResponse.ok)
+      throw new Error(await readError(noteResponse));
+
+    dialog.close();
+    await loadPurchases();
+
+    const updated = state.purchases.find(p => Number(p.id) === Number(manualReceiptPurchaseId));
+    if (updated) openPurchaseDialog(updated);
+
+    showToast("Manual receipt corrections saved. Existing assignments were preserved.");
+  } catch (err) {
+    console.error(err);
+    error.textContent = err.message || "Could not save manual receipt corrections.";
+    error.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Save corrections";
+  }
+}
+
 function openPurchaseDialog(purchase = null, defaults = {}) {
   const isEdit = Boolean(purchase);
   document.querySelector("#purchaseDialogTitle").textContent = isEdit ? "Reconcile purchase" : "Add purchase";
@@ -972,6 +1430,21 @@ function openPurchaseDialog(purchase = null, defaults = {}) {
   document.querySelector("#purchaseStatusBadge").textContent = purchase?.status || "New";
   document.querySelector("#deletePurchaseButton").hidden = !isEdit;
   document.querySelector("#verifyPurchaseButton").hidden = !isEdit || purchase?.status === "Verified";
+
+  let manualButton = document.querySelector("#manualVerifyPurchaseButton");
+  if (!manualButton) {
+    manualButton = document.createElement("button");
+    manualButton.id = "manualVerifyPurchaseButton";
+    manualButton.type = "button";
+    manualButton.className = "secondary-btn";
+    manualButton.textContent = "Verify manually";
+    manualButton.addEventListener("click", openManualReceiptDialog);
+
+    const verifyButton = document.querySelector("#verifyPurchaseButton");
+    verifyButton?.parentElement?.insertBefore(manualButton, verifyButton);
+  }
+  manualButton.hidden = !isEdit || purchase?.status === "Verified" || !(purchase?.attachments || []).length;
+
   document.querySelector("#purchaseReceiptFiles").value = "";
   document.querySelector("#purchaseReceiptSelection").textContent = "";
   hideDuplicateWarning();
@@ -1386,21 +1859,6 @@ async function readExistingPurchaseLineItems() {
       throw new Error(await readError(analysisResponse));
 
     const analysis = await analysisResponse.json();
-    const analysisIssues = Array.isArray(analysis.validationIssues)
-      ? analysis.validationIssues
-      : receiptArithmeticIssues({
-          subtotal: analysis.subtotal,
-          tax: analysis.tax,
-          total: analysis.total,
-          lineItems: analysis.lineItems || []
-        });
-
-    if (analysisIssues.length) {
-      throw new Error(
-        `Receipt item math does not reconcile. Nothing was changed. ${analysisIssues.join(" ")}`
-      );
-    }
-
     const resolved = await resolveQuickReceiptAliases(analysis.lineItems || []);
 
     if (!resolved.length)
@@ -1524,78 +1982,30 @@ function handleAllocationChange(event) {
   updateReconciliation();
 }
 
-function ensureReconcileUnassignedMetric() {
-  let valueElement = document.querySelector("#reconcileUnassigned");
-  if (valueElement) return valueElement;
-
-  const excludedValue = document.querySelector("#reconcileExcluded");
-  const differenceValue = document.querySelector("#reconcileDifference");
-  const excludedMetric = excludedValue?.parentElement;
-  const differenceMetric = differenceValue?.parentElement;
-
-  if (!excludedMetric || !differenceMetric) return null;
-
-  const unassignedMetric = excludedMetric.cloneNode(true);
-  valueElement = unassignedMetric.querySelector("#reconcileExcluded");
-
-  if (!valueElement) return null;
-
-  valueElement.id = "reconcileUnassigned";
-  valueElement.textContent = moneyExact.format(0);
-
-  for (const element of unassignedMetric.querySelectorAll("*")) {
-    if (element.children.length === 0 &&
-        /personal\s*\/\s*excluded/i.test(element.textContent || "")) {
-      element.textContent = "UNASSIGNED";
-      break;
-    }
-  }
-
-  differenceMetric.before(unassignedMetric);
-  return valueElement;
-}
-
 function updateReconciliation() {
   const total = Number(document.querySelector("#purchaseTotal")?.value || 0);
   const allocated = allocationDraft.reduce((sum,a) => sum + Number(a.amount || 0), 0);
   const home = allocationDraft.filter(a => a.allocationType !== "PersonalExcluded" && a.isIncludedInHomeSpend !== false)
     .reduce((sum,a) => sum + Number(a.amount || 0), 0);
-  const personalExcluded = allocationDraft
-    .filter(a => a.allocationType === "PersonalExcluded")
-    .reduce((sum,a) => sum + Number(a.amount || 0), 0);
-  const unassigned = allocationDraft
-    .filter(a => a.allocationType === "Unassigned")
-    .reduce((sum,a) => sum + Number(a.amount || 0), 0);
+  const excluded = allocated - home;
   const difference = total - allocated;
-
   document.querySelector("#reconcileReceiptTotal").textContent = moneyExact.format(total);
   document.querySelector("#reconcileAllocated").textContent = moneyExact.format(allocated);
   document.querySelector("#reconcileHomeSpend").textContent = moneyExact.format(home);
-  document.querySelector("#reconcileExcluded").textContent = moneyExact.format(personalExcluded);
-
-  const unassignedElement = ensureReconcileUnassignedMetric();
-  if (unassignedElement) {
-    unassignedElement.textContent = moneyExact.format(unassigned);
-  }
-
+  document.querySelector("#reconcileExcluded").textContent = moneyExact.format(excluded);
   const differenceElement = document.querySelector("#reconcileDifference");
   differenceElement.textContent = moneyExact.format(difference);
   const balanced = Math.abs(difference) < .005;
   differenceElement.classList.toggle("balanced", balanced);
   differenceElement.classList.toggle("unbalanced", !balanced);
 
-  const arithmeticIssues = currentReceiptArithmeticIssues();
-  renderReceiptArithmeticWarning(arithmeticIssues);
-
   const hasUnassigned = allocationDraft.some(a => a.allocationType === "Unassigned");
   const verifyButton = document.querySelector("#verifyPurchaseButton");
   if (verifyButton && !verifyButton.hidden) {
-    verifyButton.disabled = !balanced || hasUnassigned || arithmeticIssues.length > 0;
+    verifyButton.disabled = !balanced || hasUnassigned;
     verifyButton.title = !balanced
       ? "Receipt must balance before verification."
-      : (arithmeticIssues.length
-          ? "Receipt item math must reconcile before verification."
-          : (hasUnassigned ? "Assign every receipt item before verification." : ""));
+      : (hasUnassigned ? "Assign every receipt item before verification." : "");
   }
 }
 
@@ -1676,17 +2086,8 @@ async function verifyPurchase() {
     return;
   }
 
-  const arithmeticIssues = currentReceiptArithmeticIssues();
-  if (arithmeticIssues.length) {
-    showPurchaseError(`Receipt item math does not reconcile. ${arithmeticIssues.join(" ")}`);
-    return;
-  }
-
   if (allocationDraft.some(a => a.allocationType === "Unassigned")) {
-    const unassigned = allocationDraft
-      .filter(a => a.allocationType === "Unassigned")
-      .reduce((sum, a) => sum + Number(a.amount || 0), 0);
-    showPurchaseError(`Assign the remaining ${moneyExact.format(unassigned)} before verifying this receipt.`);
+    showPurchaseError("Assign every receipt item before verifying this receipt.");
     return;
   }
 

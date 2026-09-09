@@ -80,16 +80,23 @@ public static class PurchaseEndpoints
         List<SaveAllocationRequest>? Allocations);
 
     private static async Task<IResult> GetPurchasesAsync(
+        int? propertyId,
         HomeExcursionDbContext db,
         LaUltimaExcursionDbContext platformDb,
         CancellationToken cancellationToken)
     {
-        var property = await db.Properties
-            .AsNoTracking()
-            .Where(p => p.IsActive)
-            .OrderBy(p => p.Id)
-            .Select(p => new { p.Id, p.HouseholdId })
-            .FirstOrDefaultAsync(cancellationToken);
+        var propertyQuery = db.Properties.AsNoTracking();
+
+        var property = propertyId.HasValue
+            ? await propertyQuery
+                .Where(p => p.Id == propertyId.Value)
+                .Select(p => new { p.Id, p.HouseholdId })
+                .FirstOrDefaultAsync(cancellationToken)
+            : await propertyQuery
+                .Where(p => p.IsActive)
+                .OrderBy(p => p.Id)
+                .Select(p => new { p.Id, p.HouseholdId })
+                .FirstOrDefaultAsync(cancellationToken);
 
         if (property is null)
             return Results.NotFound(new { message = "No active Home Excursion property was found." });
@@ -590,7 +597,7 @@ public static class PurchaseEndpoints
         decimal? subtotal,
         decimal? tax,
         decimal total,
-        ICollection<PurchaseLineItem> lineItems)
+        IEnumerable<PurchaseLineItem> lineItems)
     {
         var requestItems = lineItems
             .Select(item => new SavePurchaseLineItemRequest(

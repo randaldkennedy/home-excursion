@@ -7,126 +7,245 @@
   <link rel="icon" href="/favicon.ico" sizes="any">
   <link rel="stylesheet" href="/styles.css">
 </head>
-<body>
-  <header class="hero">
-    <div class="hero-inner">
-      <div>
-        <a class="eyebrow home-link" href="https://laultimaexcursion.com/" title="Back to La Última Excursión">LA ÚLTIMA EXCURSIÓN</a>
-        <h1>Home Excursion</h1>
-        <p class="tagline">Prepare. Improve. Sell.</p>
+<body class="projects-workspace-body">
+  <header class="workspace-topbar">
+    <a class="workspace-brand" href="https://laultimaexcursion.com/" title="Back to La Última Excursión">
+      <span class="workspace-brand-mark" aria-hidden="true">⌂</span>
+      <span>
+        <strong>Home Excursion</strong>
+        <small>Better information. Less clutter. Get shit done.</small>
+      </span>
+    </a>
+
+    <div class="workspace-property">
+      <span class="workspace-property-label">CURRENT PROPERTY</span>
+      <strong id="propertyName">Loading…</strong>
+      <span id="propertyLocation"></span>
+    </div>
+
+    <div class="workspace-top-actions">
+      <div class="workspace-search" aria-label="Search placeholder">
+        <span aria-hidden="true">⌕</span>
+        <input type="search" placeholder="Search projects, contractors, files…" disabled>
       </div>
 
-      <div class="hero-actions">
-        <div class="goal">
-          <span class="goal-label">THE GOAL</span>
-          <strong>Ready to List <span>→</span> Sold <span>→</span> Alaska</strong>
-        </div>
-
-        <div id="accountMenu" class="account-menu">
-          <button id="accountButton" class="account-button" type="button" aria-expanded="false" aria-controls="accountPopover">
-            <span id="accountInitial" class="account-avatar">?</span>
-            <span id="accountName" class="account-name">Account</span>
-            <span class="account-caret" aria-hidden="true">▾</span>
-          </button>
-
-          <div id="accountPopover" class="account-popover" hidden>
-            <div class="account-identity">
-              <strong id="accountPopoverName">Signed in</strong>
-              <span id="accountEmail"></span>
-            </div>
-            <a class="account-link" href="https://laultimaexcursion.com/">← La Última Excursión</a>
-            <a class="account-link account-signout" href="/api/auth/logout">Sign out</a>
+      <div id="accountMenu" class="account-menu">
+        <button id="accountButton" class="account-button" type="button" aria-expanded="false" aria-controls="accountPopover">
+          <span id="accountInitial" class="account-avatar">?</span>
+          <span id="accountName" class="account-name">Account</span>
+          <span class="account-caret" aria-hidden="true">▾</span>
+        </button>
+        <div id="accountPopover" class="account-popover" hidden>
+          <div class="account-identity">
+            <strong id="accountPopoverName">Signed in</strong>
+            <span id="accountEmail"></span>
           </div>
+          <a class="account-link" href="https://laultimaexcursion.com/">← La Última Excursión</a>
+          <a class="account-link account-signout" href="/api/auth/logout">Sign out</a>
         </div>
       </div>
     </div>
   </header>
 
-  <main class="shell">
-    <section class="property-strip">
-      <div>
-        <span class="section-kicker">ACTIVE PROPERTY</span>
-        <h2 id="propertyName">Loading…</h2>
-        <p id="propertyLocation"></p>
-      </div>
-      <div class="progress-wrap">
-        <div class="progress-copy">
-          <span>Ready-to-list progress</span>
-          <strong id="progressPercent">—</strong>
+  <div class="workspace-layout">
+    <aside class="workspace-sidebar" aria-label="Home Excursion navigation">
+      <nav class="workspace-nav">
+        <button class="workspace-nav-item active" type="button" data-workspace-view="houses"><span>⌂</span>Houses</button>
+        <button class="workspace-nav-item" type="button" data-workspace-view="projects"><span>◆</span>Projects</button>
+        <button class="workspace-nav-item" type="button" data-sidebar-contractors><span>♟</span>Contractors &amp; Bids</button>
+        <button class="workspace-nav-item" type="button" data-sidebar-files><span>▧</span>Photos / Documents</button>
+        <button class="workspace-nav-item" type="button" data-workspace-view="tasks"><span>☑</span>Tasks / Punch List <b id="sidebarTaskCount"></b></button>
+        <button class="workspace-nav-item" type="button" data-workspace-view="expenses"><span>$</span>Expenses</button>
+        <button class="workspace-nav-item" type="button"><span>◷</span>Activity</button>
+      </nav>
+
+      <div class="workspace-sidebar-bottom">
+        <button class="workspace-nav-item" type="button" data-workspace-view="houses"><span>⚙</span>Property Settings</button>
+        <div class="workspace-sidebar-motto">
+          <strong>Home Excursion</strong>
+          <span>Ready to List → Sold → Alaska</span>
         </div>
-        <div class="progress-track" aria-label="Ready-to-list progress">
-          <div id="progressBar" class="progress-bar"></div>
-        </div>
       </div>
-    </section>
+    </aside>
 
-    <section class="quick-action-strip" aria-label="Quick actions">
-      <div class="quick-action-copy">
-        <span class="section-kicker">OUT IN THE WILD?</span>
-        <strong>Got a receipt? Capture it now.</strong>
-        <small>Take the picture. Add vendor and total. Reconcile it later.</small>
-      </div>
-      <button class="quick-receipt-btn quick-receipt-hero-btn" type="button" data-quick-receipt onclick="openQuickReceiptDialog()">📷 Quick Receipt</button>
-    </section>
-
-    <section class="summary-grid" aria-label="Project summary">
-      <article id="spentSummaryCard" class="summary-card summary-card-link" role="button" tabindex="0" aria-label="View expenses">
-  <span class="summary-label">Spent</span>
-  <strong id="spent">$—</strong>
-  <span class="summary-note">all posted expenses · view details ↓</span>
-</article>
-      <article class="summary-card"><span class="summary-label">Maintenance</span><strong id="maintenance">$—</strong><span class="summary-note">service & upkeep</span></article>
-      <article class="summary-card"><span class="summary-label">Committed</span><strong id="committed">$—</strong><span class="summary-note">approved work</span></article>
-      <article class="summary-card"><span class="summary-label">Estimated</span><strong id="estimated">$—</strong><span class="summary-note">known planned estimates</span></article>
-      <article class="summary-card accent-card"><span class="summary-label">Progress</span><strong id="progressCount">—</strong><span class="summary-note">projects + punch list</span></article>
-    </section>
-
-    <section class="content-grid">
-      <div class="left-column-stack">
-        <article class="panel projects-panel">
-          <div class="panel-heading projects-heading">
-            <div><span class="section-kicker">BIG STUFF</span><h2>Projects</h2></div>
-            <button id="addProjectButton" class="primary-btn" type="button">+ Add project</button>
+    <main class="projects-workspace-main">
+      <section id="housesWorkspaceView" class="houses-workspace-view">
+        <div class="houses-page-toolbar">
+          <div>
+            <span class="section-kicker">PROPERTIES</span>
+            <h1>Houses</h1>
           </div>
-          <div id="projects" class="projects-list"><div class="loading">Loading projects…</div></div>
-        </article>
-
-        <article class="panel contractors-panel">
-          <div class="panel-heading">
-            <div>
-              <span class="section-kicker">WHO WE CALL</span>
-              <h2>Contractors</h2>
+          <div class="houses-page-actions">
+            <div class="houses-search">
+              <span aria-hidden="true">⌕</span>
+              <input id="houseSearch" type="search" placeholder="Search houses…">
             </div>
-            <button id="addContractorButton" class="primary-btn" type="button">+ Add contractor</button>
+            <button id="addHouseButton" class="house-add-btn" type="button">+ Add house</button>
           </div>
-          <div id="contractors" class="projects-list">
-            <div class="loading">Loading contractors…</div>
-          </div>
-        </article>
+        </div>
 
-        <article class="panel maintenance-panel">
-          <div class="panel-heading">
-            <div>
-              <span class="section-kicker">UPKEEP</span>
-              <h2>Maintenance</h2>
+        <section class="houses-layout">
+          <div class="houses-list-pane">
+            <div class="houses-toolbar">
+              <div class="house-filter-group" id="houseFilters" role="group" aria-label="House filters">
+                <button class="house-filter active" type="button" data-house-filter="all">All</button>
+                <button class="house-filter" type="button" data-house-filter="active">Active</button>
+                <button class="house-filter" type="button" data-house-filter="inactive">Inactive</button>
+              </div>
+              <label class="houses-sort">
+                <span>Sort by</span>
+                <select id="houseSort" class="sort-select">
+                  <option value="name">Name (A–Z)</option>
+                  <option value="newest">Newest first</option>
+                </select>
+              </label>
+            </div>
+
+            <div id="housesList" class="houses-list">
+              <div class="loading">Loading houses…</div>
             </div>
           </div>
-          <div id="maintenanceList" class="maintenance-list">
-            <div class="loading">Loading maintenance…</div>
-          </div>
-        </article>
-      </div>
 
-      <article class="panel tasks-panel">
-        <div class="panel-heading tasks-heading">
-          <div><span class="section-kicker">THE PUNCH LIST</span><h2>What needs doing</h2></div>
-          <div class="tasks-actions">
+          <article id="houseDetailPane" class="house-detail-pane">
+            <div class="house-detail-empty">
+              <span class="house-empty-icon">⌂</span>
+              <h2>Select a house</h2>
+              <p>Choose a property on the left, or add Mom's house so we can get that siding project moving.</p>
+            </div>
+          </article>
+        </section>
+      </section>
+
+      <section id="projectsWorkspaceView" class="projects-workspace-view" hidden>
+      <section class="ready-strip">
+        <div class="ready-strip-copy">
+          <span class="section-kicker">THE GOAL</span>
+          <h1>Ready to List Progress</h1>
+          <p>Track the work that gets this house ready to sell.</p>
+        </div>
+        <div class="ready-strip-progress">
+          <div class="progress-copy">
+            <span id="progressCount">—</span>
+            <strong id="progressPercent">—</strong>
+          </div>
+          <div class="progress-track" aria-label="Ready-to-list progress">
+            <div id="progressBar" class="progress-bar"></div>
+          </div>
+        </div>
+        <div class="ready-strip-status">
+          <span class="ready-house-icon">⌂</span>
+          <div>
+            <strong>Keep moving.</strong>
+            <span>Every finished project gets us closer to the sign in the yard.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="projects-page-grid">
+        <div class="projects-page-primary">
+          <header class="projects-page-header">
+            <div>
+              <span class="section-kicker">BIG STUFF</span>
+              <h2>Projects</h2>
+              <p>Manage the work that gets this property ready to list.</p>
+            </div>
+            <div class="projects-page-actions">
+              <label class="project-house-picker">
+                <span>House</span>
+                <select id="projectHouseSelector" class="sort-select"></select>
+              </label>
+              <button id="addContractorButton" class="secondary-btn" type="button">+ Add contractor</button>
+              <button class="secondary-btn" type="button" data-quick-receipt onclick="openQuickReceiptDialog()">📷 Quick receipt</button>
+              <button id="addProjectButton" class="primary-btn" type="button">+ Add project</button>
+            </div>
+          </header>
+
+          <div class="projects-toolbar">
+            <div class="project-filter-group" id="projectLandingFilters" role="group" aria-label="Project filters">
+              <button class="project-filter active" type="button" data-project-filter="all">All</button>
+              <button class="project-filter" type="button" data-project-filter="active">Active</button>
+              <button class="project-filter" type="button" data-project-filter="bids">Getting Bids</button>
+              <button class="project-filter" type="button" data-project-filter="scheduled">Scheduled</button>
+              <button class="project-filter" type="button" data-project-filter="complete">Completed</button>
+            </div>
+            <label class="projects-sort-label">
+              <span>Sort by</span>
+              <select id="projectLandingSort" class="sort-select">
+                <option value="priority">Priority</option>
+                <option value="name">Name</option>
+                <option value="date">Target date</option>
+                <option value="cost">Estimated cost</option>
+              </select>
+            </label>
+          </div>
+
+          <div id="projects" class="projects-workspace-list">
+            <div class="loading">Loading projects…</div>
+          </div>
+        </div>
+
+        <aside class="projects-page-rail">
+          <section class="rail-card financial-card">
+            <div class="rail-card-title"><span>▦</span><h3>Project Financials</h3></div>
+            <dl class="financial-list">
+              <div><dt>Estimated work</dt><dd id="estimated">$—</dd></div>
+              <div><dt>Committed</dt><dd id="committed">$—</dd></div>
+              <div id="spentSummaryCard" class="financial-link" role="button" tabindex="0"><dt>Actual spent</dt><dd id="spent">$—</dd></div>
+              <div><dt>Maintenance</dt><dd id="maintenance">$—</dd></div>
+            </dl>
+            <div class="financial-project-counts">
+              <div><span>Open projects</span><strong id="openProjectCount">—</strong></div>
+              <div><span>Completed projects</span><strong id="completedProjectCount">—</strong></div>
+              <div><span>Total projects</span><strong id="totalProjectCount">—</strong></div>
+            </div>
+          </section>
+
+          <section class="rail-card progress-callout">
+            <span class="rail-callout-icon">💡</span>
+            <div>
+              <h3>Keep the list moving.</h3>
+              <p>Open the project that needs attention, make the next decision, and get it out of the way.</p>
+            </div>
+          </section>
+
+          <section class="rail-card quick-tips-card">
+            <div class="rail-card-title"><span>☷</span><h3>Quick Tips</h3></div>
+            <ol>
+              <li>Open a project for contractors, bids, photos, files, expenses and notes.</li>
+              <li>Use the filters to get completed work out of the way.</li>
+              <li>Capture receipts immediately; reconcile them when you are back home.</li>
+            </ol>
+          </section>
+        </aside>
+      </section>
+
+      </section>
+
+      <section id="tasksWorkspaceView" class="workspace-page-view" hidden>
+        <header class="workspace-page-header">
+          <div>
+            <span class="section-kicker">THE PUNCH LIST</span>
+            <h1>Tasks / Punch List</h1>
+            <p>All the little shit that still has to get done before the house is ready.</p>
+          </div>
+
+          <div class="workspace-page-header-actions">
+            <label class="workspace-house-picker">
+              <span>House</span>
+              <select id="taskHouseSelector" class="sort-select"></select>
+            </label>
+            <button id="addTaskButton" class="primary-btn" type="button">+ Add task</button>
+          </div>
+        </header>
+
+        <section class="workspace-page-card">
+          <div class="workspace-toolbar punch-list-toolbar">
             <div class="filter-group" role="group" aria-label="Task filters">
-              <button class="filter-btn active" data-filter="open">Open</button>
-              <button class="filter-btn" data-filter="in-progress">In Progress</button>
-              <button class="filter-btn" data-filter="diy">DIY</button>
-              <button class="filter-btn" data-filter="contractor">Contractor</button>
-              <button class="filter-btn" data-filter="all">All</button>
+              <button class="filter-btn active" data-filter="open" type="button">Open</button>
+              <button class="filter-btn" data-filter="in-progress" type="button">In Progress</button>
+              <button class="filter-btn" data-filter="diy" type="button">DIY</button>
+              <button class="filter-btn" data-filter="contractor" type="button">Contractor</button>
+              <button class="filter-btn" data-filter="all" type="button">All</button>
             </div>
 
             <select id="areaFilter" class="sort-select" aria-label="Filter by area">
@@ -135,51 +254,83 @@
 
             <select id="taskSort" class="sort-select" aria-label="Sort punch list">
               <option value="smart" selected>Smart sort</option>
-              <option value="project">Project</option>
               <option value="area">Area</option>
               <option value="priority">Priority</option>
               <option value="target-date">Target date</option>
               <option value="manual">Manual</option>
             </select>
-
-            <button id="addTaskButton" class="primary-btn">+ Add task</button>
           </div>
-        </div>
 
-        <div class="task-stats">
-          <span id="taskStats">—</span>
-          <span class="task-tip">In progress first. Finished stuff gets out of the way.</span>
-        </div>
-        <div id="tasks" class="task-list"><div class="loading">Loading punch list…</div></div>
-      </article>
-    </section>
+          <div class="task-stats workspace-summary-line">
+            <span id="taskStats">Loading punch list…</span>
+            <span class="task-tip">In progress first. Finished stuff gets out of the way.</span>
+          </div>
 
-    <section class="panel purchases-panel">
-      <div class="panel-heading expenses-heading">
-        <div><span class="section-kicker">MONEY OUT</span><h2>Receipts / Purchases</h2></div>
-        <div class="purchase-heading-actions">
-          <button class="quick-receipt-btn" type="button" data-quick-receipt onclick="openQuickReceiptDialog()">📷 Quick Receipt</button>
-          <button id="addPurchaseButton" class="primary-btn" type="button">+ Add purchase</button>
-        </div>
-      </div>
-      <div class="expense-toolbar">
-        <input id="purchaseSearch" class="expense-search" type="search" placeholder="Search vendor, allocation, task, project…">
-        <select id="purchaseStatusFilter" class="sort-select" aria-label="Filter purchases">
-          <option value="">All receipts</option><option value="Needs Review">Needs review</option><option value="Unreviewed">Unreviewed</option><option value="Unassigned">Unassigned</option><option value="Verified">Verified</option>
-        </select>
-      </div>
-      <div class="expense-summary-line">
-        <span id="purchaseStats">Loading purchases…</span>
-        <span>Click a receipt to reconcile it.</span>
-      </div>
-      <div id="purchaseBulkActions" class="purchase-bulk-actions" hidden>
-        <strong id="purchaseSelectedCount">0 selected</strong>
-        <button id="deleteSelectedPurchasesButton" type="button" class="danger-btn">🗑 Delete selected</button>
-      </div>
-      <div id="purchases" class="purchases-list"><div class="loading">Loading purchases…</div></div>
-    </section>
-  </main>
+          <div id="tasks" class="task-list">
+            <div class="loading">Loading punch list…</div>
+          </div>
+        </section>
+      </section>
 
+      <section id="expensesWorkspaceView" class="workspace-page-view" hidden>
+        <header class="workspace-page-header">
+          <div>
+            <span class="section-kicker">MONEY OUT</span>
+            <h1>Expenses</h1>
+            <p>Receipts, purchases, allocations and what this house is actually costing.</p>
+          </div>
+
+          <div class="workspace-page-header-actions">
+            <label class="workspace-house-picker">
+              <span>House</span>
+              <select id="expenseHouseSelector" class="sort-select"></select>
+            </label>
+            <button class="secondary-btn" type="button" data-quick-receipt onclick="openQuickReceiptDialog()">📷 Quick receipt</button>
+            <button id="addPurchaseButton" class="primary-btn" type="button">+ Add purchase</button>
+          </div>
+        </header>
+
+        <section class="workspace-page-card">
+          <div class="workspace-toolbar expenses-workspace-toolbar">
+            <input id="purchaseSearch"
+                   class="expense-search"
+                   type="search"
+                   placeholder="Search vendor, allocation, task, project…">
+
+            <select id="purchaseStatusFilter" class="sort-select" aria-label="Filter purchases">
+              <option value="">All receipts</option>
+              <option value="Needs Review">Needs review</option>
+              <option value="Unreviewed">Unreviewed</option>
+              <option value="Unassigned">Unassigned</option>
+              <option value="Verified">Verified</option>
+            </select>
+          </div>
+
+          <div class="workspace-summary-line">
+            <span id="purchaseStats">Loading purchases…</span>
+            <span>Click a purchase to review or reconcile it.</span>
+          </div>
+
+          <div id="purchaseBulkActions" class="purchase-bulk-actions" hidden>
+            <strong id="purchaseSelectedCount">0 selected</strong>
+            <button id="deleteSelectedPurchasesButton" class="danger-btn" type="button">Delete selected</button>
+          </div>
+
+          <div id="purchases" class="purchases-list">
+            <div class="loading">Loading purchases…</div>
+          </div>
+        </section>
+      </section>
+
+      <!-- Operational data that still feeds existing modules but does not yet have its own page. -->
+      <section class="legacy-workspace-views" aria-hidden="true">
+        <div id="contractors"></div>
+        <div id="maintenanceList"></div>
+      </section>
+    </main>
+  </div>
+
+  <input id="housePhotoFile" type="file" accept="image/*" hidden>
 
   <dialog id="projectDialog" class="modal project-modal">
     <section class="modal-card">
@@ -246,13 +397,17 @@
 
         <label class="field">
           <span>Purpose</span>
-          <input id="projectPurpose" maxlength="60" list="projectPurposeSuggestions" placeholder="Resale Improvement">
+          <select id="projectPurpose">
+            <option value="">Select purpose…</option>
+            <option>Resale Improvement</option>
+            <option>Repair</option>
+            <option>Maintenance</option>
+            <option>Cosmetic Update</option>
+            <option>Curb Appeal</option>
+            <option>Safety</option>
+            <option>Other</option>
+          </select>
         </label>
-        <datalist id="projectPurposeSuggestions">
-          <option value="Resale Improvement"></option>
-          <option value="Repair"></option>
-          <option value="Maintenance"></option>
-        </datalist>
 
         <label class="field field-wide">
           <span>Parent project</span>

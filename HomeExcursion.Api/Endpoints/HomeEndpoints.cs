@@ -14,6 +14,12 @@ public static class HomeEndpoints
 
         group.MapGet("/dashboard", GetDashboardAsync);
 
+        group.MapGet("/properties", GetPropertiesAsync);
+        group.MapPost("/properties", CreatePropertyAsync);
+        group.MapPut("/properties/{id:int}", UpdatePropertyAsync);
+        group.MapPost("/properties/{id:int}/photo", UploadPropertyPhotoAsync)
+            .DisableAntiforgery();
+
         group.MapGet("/contractors", GetContractorsAsync);
         group.MapPost("/contractors", CreateContractorAsync);
         group.MapPut("/contractors/{vendorId:int}", UpdateContractorAsync);
@@ -35,6 +41,8 @@ public static class HomeEndpoints
             .DisableAntiforgery();
         group.MapPost("/projects/{id:int}/contractors/{contractorId:int}/activities", CreateProjectContractorActivityAsync);
         group.MapPost("/projects/{id:int}/contractors/{contractorId:int}/proposals", CreateProjectContractorProposalAsync);
+        group.MapPost("/projects/{id:int}/contractors/{contractorId:int}/proposals/{proposalId:int}/attachment", UploadProjectContractorProposalAttachmentAsync)
+            .DisableAntiforgery();
         group.MapPut("/projects/{id:int}/contractors/{contractorId:int}/proposals/{proposalId:int}", UpdateProjectContractorProposalAsync);
         group.MapDelete("/projects/{id:int}/contractors/{contractorId:int}/proposals/{proposalId:int}", DeleteProjectContractorProposalAsync);
 
@@ -61,14 +69,19 @@ public static class HomeEndpoints
     }
 
     private static async Task<IResult> GetDashboardAsync(
+        int? propertyId,
         HomeExcursionDbContext db,
         CancellationToken cancellationToken)
     {
-        var property = await db.Properties
-            .AsNoTracking()
-            .Where(p => p.IsActive)
-            .OrderBy(p => p.Id)
-            .FirstOrDefaultAsync(cancellationToken);
+        var propertyQuery = db.Properties.AsNoTracking();
+
+        var property = propertyId.HasValue
+            ? await propertyQuery
+                .FirstOrDefaultAsync(p => p.Id == propertyId.Value, cancellationToken)
+            : await propertyQuery
+                .Where(p => p.IsActive)
+                .OrderBy(p => p.Id)
+                .FirstOrDefaultAsync(cancellationToken);
 
         if (property is null)
         {
@@ -247,9 +260,11 @@ public static class HomeEndpoints
             {
                 property.Id,
                 property.Name,
+                property.Address1,
                 property.City,
                 property.State,
-                property.PostalCode
+                property.PostalCode,
+                property.IsActive
             },
             summary = new
             {
@@ -267,6 +282,283 @@ public static class HomeEndpoints
             tasks,
             maintenanceExpenses
         });
+    }
+
+    private sealed record SavePropertyRequest(
+        string Name,
+        string Address1,
+        string? City,
+        string? State,
+        string? PostalCode,
+        bool IsActive);
+
+    private static async Task<IResult> GetPropertiesAsync(
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        CancellationToken cancellationToken)
+    {
+        var properties = await db.Properties
+            .AsNoTracking()
+            .OrderByDescending(p => p.IsActive)
+            .ThenBy(p => p.Name)
+            .Select(p => new
+            {
+                p.Id,
+                p.HouseholdId,
+                p.Name,
+                p.Address1,
+                p.City,
+                p.State,
+                p.PostalCode,
+                p.IsActive,
+                p.CreatedAt
+            })
+            .ToListAsync(cancellationToken);
+
+        var householdIds = properties.Select(p => p.HouseholdId).Distinct().ToList();
+        var propertyIds = properties.Select(p => p.Id.ToString()).ToHashSet();
+
+        var photos = await platformDb.Attachments
+            .AsNoTracking()
+            .Where(a =>
+                a.IsActive &&
+                householdIds.Contains(a.HouseholdId) &&
+                a.App == "home" &&
+                a.EntityType == "Property" &&
+                a.Category == "property-photo" &&
+                a.EntityId != null &&
+                propertyIds.Contains(a.EntityId))
+            .OrderByDescending(a => a.UploadedUtc)
+            .Select(a => new
+            {
+                a.Id,
+                a.EntityId,
+                a.UploadedUtc
+            })
+            .ToListAsync(cancellationToken);
+
+        var photoByPropertyId = photos
+            .Where(a => int.TryParse(a.EntityId, out _))
+            .GroupBy(a => int.Parse(a.EntityId!))
+            .ToDictionary(g => g.Key, g => (int?)g.First().Id);
+
+        return Results.Ok(properties.Select(p => new
+        {
+            p.Id,
+            p.Name,
+            p.Address1,
+            p.City,
+            p.State,
+            p.PostalCode,
+            p.IsActive,
+            p.CreatedAt,
+            PhotoAttachmentId = photoByPropertyId.GetValueOrDefault(p.Id)
+        }));
+    }
+
+    private static async Task<IResult> CreatePropertyAsync(
+        SavePropertyRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var validation = ValidatePropertyRequest(request);
+        if (validation is not null)
+            return validation;
+
+        var householdId = await db.Properties
+            .AsNoTracking()
+            .OrderBy(p => p.Id)
+            .Select(p => (int?)p.HouseholdId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (!householdId.HasValue)
+            return Results.BadRequest(new { message = "Home Excursion needs an existing household before another house can be added." });
+
+        var property = new Property
+        {
+            HouseholdId = householdId.Value,
+            Name = request.Name.Trim(),
+            Address1 = request.Address1.Trim(),
+            City = Clean(request.City),
+            State = Clean(request.State),
+            PostalCode = Clean(request.PostalCode),
+            IsActive = request.IsActive,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        db.Properties.Add(property);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Created($"/api/home/properties/{property.Id}", new { property.Id });
+    }
+
+    private static async Task<IResult> UpdatePropertyAsync(
+        int id,
+        SavePropertyRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var validation = ValidatePropertyRequest(request);
+        if (validation is not null)
+            return validation;
+
+        var property = await db.Properties
+            .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+
+        if (property is null)
+            return Results.NotFound();
+
+        property.Name = request.Name.Trim();
+        property.Address1 = request.Address1.Trim();
+        property.City = Clean(request.City);
+        property.State = Clean(request.State);
+        property.PostalCode = Clean(request.PostalCode);
+        property.IsActive = request.IsActive;
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(new { property.Id });
+    }
+
+    private static IResult? ValidatePropertyRequest(SavePropertyRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+            return Results.BadRequest(new { message = "House name is required." });
+
+        if (request.Name.Trim().Length > 200)
+            return Results.BadRequest(new { message = "House name must be 200 characters or fewer." });
+
+        if (string.IsNullOrWhiteSpace(request.Address1))
+            return Results.BadRequest(new { message = "Street address is required." });
+
+        if (request.Address1.Trim().Length > 250)
+            return Results.BadRequest(new { message = "Street address must be 250 characters or fewer." });
+
+        if (Clean(request.City)?.Length > 100)
+            return Results.BadRequest(new { message = "City must be 100 characters or fewer." });
+
+        if (Clean(request.State)?.Length > 50)
+            return Results.BadRequest(new { message = "State must be 50 characters or fewer." });
+
+        if (Clean(request.PostalCode)?.Length > 20)
+            return Results.BadRequest(new { message = "ZIP/postal code must be 20 characters or fewer." });
+
+        return null;
+    }
+
+    private static async Task<IResult> UploadPropertyPhotoAsync(
+        int id,
+        IFormFile file,
+        HttpContext httpContext,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        IAttachmentStorageService storage,
+        CancellationToken cancellationToken)
+    {
+        const long MaxUploadBytes = 20L * 1024L * 1024L;
+
+        if (file.Length <= 0)
+            return Results.BadRequest(new { message = "Choose a photo to upload." });
+
+        if (file.Length > MaxUploadBytes)
+            return Results.BadRequest(new { message = "Property photos must be 20 MB or smaller." });
+
+        var isImage = file.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true;
+        if (!isImage)
+            return Results.BadRequest(new { message = "Property photos must be image files." });
+
+        var property = await db.Properties
+            .AsNoTracking()
+            .Where(p => p.Id == id)
+            .Select(p => new
+            {
+                p.Id,
+                p.HouseholdId
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (property is null)
+            return Results.NotFound();
+
+        var userId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!userId.HasValue)
+            return Results.Unauthorized();
+
+        var hasAccess = await platformDb.HouseholdMembers
+            .AnyAsync(
+                hm => hm.UserId == userId.Value && hm.HouseholdId == property.HouseholdId,
+                cancellationToken);
+
+        if (!hasAccess)
+            return Results.NotFound();
+
+        StoredAttachment stored;
+        await using (var stream = file.OpenReadStream())
+        {
+            stored = await storage.UploadAsync(
+                property.HouseholdId,
+                "home",
+                "property-photo",
+                Path.GetFileName(file.FileName),
+                file.ContentType ?? "application/octet-stream",
+                stream,
+                cancellationToken);
+        }
+
+        var priorPhotos = await platformDb.Attachments
+            .Where(a =>
+                a.IsActive &&
+                a.HouseholdId == property.HouseholdId &&
+                a.App == "home" &&
+                a.EntityType == "Property" &&
+                a.EntityId == id.ToString() &&
+                a.Category == "property-photo")
+            .ToListAsync(cancellationToken);
+
+        foreach (var prior in priorPhotos)
+            prior.IsActive = false;
+
+        var attachment = new Attachment
+        {
+            HouseholdId = property.HouseholdId,
+            UploadedByUserId = userId.Value,
+            App = "home",
+            Category = "property-photo",
+            EntityType = "Property",
+            EntityId = id.ToString(),
+            FileName = Path.GetFileName(file.FileName),
+            ContentType = file.ContentType ?? "application/octet-stream",
+            BlobName = stored.BlobName,
+            FileSizeBytes = stored.FileSizeBytes,
+            UploadedUtc = DateTime.UtcNow,
+            IsActive = true
+        };
+
+        try
+        {
+            platformDb.Attachments.Add(attachment);
+            await platformDb.SaveChangesAsync(cancellationToken);
+        }
+        catch
+        {
+            await storage.DeleteAsync(stored.BlobName, cancellationToken);
+            throw;
+        }
+
+        await AttachmentThumbnailHelper.EnsureCreatedAsync(
+            attachment.BlobName,
+            storage,
+            cancellationToken);
+
+        return Results.Created(
+            $"/api/attachments/{attachment.Id}",
+            new
+            {
+                attachment.Id,
+                attachment.FileName,
+                attachment.ContentType,
+                attachment.FileSizeBytes,
+                attachment.UploadedUtc
+            });
     }
 
     private sealed record SaveContractorRequest(
@@ -927,6 +1219,7 @@ public static class HomeEndpoints
         var purchaseEntityIds = expenses.Select(e => e.PurchaseId.ToString()).ToHashSet();
         var projectEntityIds = scopeIds.Select(x => x.ToString()).ToHashSet();
         var contractorEntityIds = contractors.Select(c => c.Id.ToString()).ToHashSet();
+        var proposalEntityIds = proposals.Select(p => p.Id.ToString()).ToHashSet();
 
         var attachments = await platformDb.Attachments
             .AsNoTracking()
@@ -937,7 +1230,8 @@ public static class HomeEndpoints
                 (
                     (a.EntityType == "HomeProject" && a.EntityId != null && projectEntityIds.Contains(a.EntityId)) ||
                     (a.EntityType == "Purchase" && a.EntityId != null && purchaseEntityIds.Contains(a.EntityId)) ||
-                    (a.EntityType == "ProjectContractor" && a.EntityId != null && contractorEntityIds.Contains(a.EntityId))
+                    (a.EntityType == "ProjectContractor" && a.EntityId != null && contractorEntityIds.Contains(a.EntityId)) ||
+                    (a.EntityType == "ProjectContractorProposal" && a.EntityId != null && proposalEntityIds.Contains(a.EntityId))
                 ))
             .OrderByDescending(a => a.UploadedUtc)
             .Select(a => new
@@ -1490,11 +1784,144 @@ public static class HomeEndpoints
         if (proposal.IsCurrent)
             contractor.BidAmount = proposal.Amount;
 
+        contractor.Status = "Bid Received";
+        contractor.UpdatedAt = DateTime.UtcNow;
+
+        var proposalSummary = proposal.Amount.HasValue
+            ? $"Proposal received - {proposal.Amount.Value:C2}"
+            : "Proposal received";
+
+        if (!string.IsNullOrWhiteSpace(proposal.RevisionLabel))
+            proposalSummary += $" - {proposal.RevisionLabel}";
+
+        db.ProjectContractorActivities.Add(new ProjectContractorActivity
+        {
+            ProjectContractorId = contractorId,
+            ActivityType = "Estimate",
+            ActivityAt = request.ReceivedDate.ToDateTime(new TimeOnly(12, 0)),
+            Summary = proposalSummary,
+            Notes = proposal.Notes,
+            CreatedAt = DateTime.UtcNow
+        });
+
         await db.SaveChangesAsync(cancellationToken);
 
         return Results.Created(
             $"/api/home/projects/{id}/contractors/{contractorId}/proposals/{proposal.Id}",
             new { proposal.Id });
+    }
+
+    private static async Task<IResult> UploadProjectContractorProposalAttachmentAsync(
+        int id,
+        int contractorId,
+        int proposalId,
+        IFormFile file,
+        HttpContext httpContext,
+        HomeExcursionDbContext db,
+        LaUltimaExcursionDbContext platformDb,
+        IAttachmentStorageService storage,
+        CancellationToken cancellationToken)
+    {
+        const long MaxUploadBytes = 20L * 1024L * 1024L;
+
+        if (file.Length <= 0)
+            return Results.BadRequest(new { message = "Choose a bid file to upload." });
+
+        if (file.Length > MaxUploadBytes)
+            return Results.BadRequest(new { message = "Bid files must be 20 MB or smaller." });
+
+        var isImage = file.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true;
+        var isPdf = string.Equals(file.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase);
+
+        if (!isImage && !isPdf)
+            return Results.BadRequest(new { message = "Bid files currently support images and PDF files." });
+
+        var proposal = await db.ProjectContractorProposals
+            .AsNoTracking()
+            .Where(p =>
+                p.Id == proposalId &&
+                p.ProjectContractorId == contractorId &&
+                p.ProjectContractor.ProjectId == id)
+            .Select(p => new
+            {
+                p.Id,
+                HouseholdId = p.ProjectContractor.Project.Property.HouseholdId
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (proposal is null)
+            return Results.NotFound();
+
+        var userId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!userId.HasValue)
+            return Results.Unauthorized();
+
+        var hasAccess = await platformDb.HouseholdMembers
+            .AnyAsync(
+                hm => hm.UserId == userId.Value && hm.HouseholdId == proposal.HouseholdId,
+                cancellationToken);
+
+        if (!hasAccess)
+            return Results.NotFound();
+
+        StoredAttachment stored;
+        await using (var stream = file.OpenReadStream())
+        {
+            stored = await storage.UploadAsync(
+                proposal.HouseholdId,
+                "home",
+                "bid-document",
+                Path.GetFileName(file.FileName),
+                file.ContentType ?? "application/octet-stream",
+                stream,
+                cancellationToken);
+        }
+
+        var attachment = new Attachment
+        {
+            HouseholdId = proposal.HouseholdId,
+            UploadedByUserId = userId.Value,
+            App = "home",
+            Category = "bid-document",
+            EntityType = "ProjectContractorProposal",
+            EntityId = proposal.Id.ToString(),
+            FileName = Path.GetFileName(file.FileName),
+            ContentType = file.ContentType ?? "application/octet-stream",
+            BlobName = stored.BlobName,
+            FileSizeBytes = stored.FileSizeBytes,
+            UploadedUtc = DateTime.UtcNow,
+            IsActive = true
+        };
+
+        try
+        {
+            platformDb.Attachments.Add(attachment);
+            await platformDb.SaveChangesAsync(cancellationToken);
+        }
+        catch
+        {
+            await storage.DeleteAsync(stored.BlobName, cancellationToken);
+            throw;
+        }
+
+        if (isImage)
+        {
+            await AttachmentThumbnailHelper.EnsureCreatedAsync(
+                attachment.BlobName,
+                storage,
+                cancellationToken);
+        }
+
+        return Results.Created(
+            $"/api/attachments/{attachment.Id}",
+            new
+            {
+                attachment.Id,
+                attachment.FileName,
+                attachment.ContentType,
+                attachment.FileSizeBytes,
+                attachment.UploadedUtc
+            });
     }
 
     private static async Task<IResult> UpdateProjectContractorProposalAsync(

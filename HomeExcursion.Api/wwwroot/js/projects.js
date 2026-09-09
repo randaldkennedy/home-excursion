@@ -1,62 +1,202 @@
+let projectLandingFilter = "all";
+let projectLandingSort = "priority";
+
 function renderProjects() {
   const container = document.querySelector("#projects");
-  const projects = [...state.data.projects];
+  if (!container || !state.data?.projects) return;
 
-  // Keep child projects in the data model for project-detail drill-down,
-  // but only show top-level projects on the dashboard.
-  const roots = projects
-    .filter(project => project.parentProjectId == null)
-    .sort((a, b) =>
+  const allProjects = [...state.data.projects];
+  let roots = allProjects.filter(project => project.parentProjectId == null);
+
+  const normalize = value => String(value || "").trim().toLowerCase();
+  const filterMatch = project => {
+    const status = normalize(project.status);
+    if (projectLandingFilter === "active")
+      return !["complete", "closed", "cancelled"].includes(status);
+    if (projectLandingFilter === "bids")
+      return status === "getting bids" || status === "research";
+    if (projectLandingFilter === "scheduled")
+      return status === "scheduled" || status === "approved";
+    if (projectLandingFilter === "complete")
+      return status === "complete" || status === "closed";
+    return true;
+  };
+
+  roots = roots.filter(filterMatch);
+
+  const sorters = {
+    name: (a, b) => (a.name || "").localeCompare(b.name || ""),
+    date: (a, b) => projectDateRank(a) - projectDateRank(b) || (a.name || "").localeCompare(b.name || ""),
+    cost: (a, b) => Number(b.estimatedCost || 0) - Number(a.estimatedCost || 0) || (a.name || "").localeCompare(b.name || ""),
+    priority: (a, b) =>
       projectStatusRank(a) - projectStatusRank(b) ||
       projectDateRank(a) - projectDateRank(b) ||
       (a.sortOrder ?? 0) - (b.sortOrder ?? 0) ||
-      a.name.localeCompare(b.name)
-    );
+      (a.name || "").localeCompare(b.name || "")
+  };
+  roots.sort(sorters[projectLandingSort] || sorters.priority);
+
+  updateProjectLandingCounts(allProjects);
+
+  document.querySelectorAll("[data-project-filter]").forEach(button => {
+    const filter = button.dataset.projectFilter;
+    let count = 0;
+    if (filter === "all") count = allProjects.filter(p => p.parentProjectId == null).length;
+    else if (filter === "active") count = allProjects.filter(p => p.parentProjectId == null && !["complete","closed","cancelled"].includes(normalize(p.status))).length;
+    else if (filter === "bids") count = allProjects.filter(p => p.parentProjectId == null && ["getting bids","research"].includes(normalize(p.status))).length;
+    else if (filter === "scheduled") count = allProjects.filter(p => p.parentProjectId == null && ["scheduled","approved"].includes(normalize(p.status))).length;
+    else if (filter === "complete") count = allProjects.filter(p => p.parentProjectId == null && ["complete","closed"].includes(normalize(p.status))).length;
+    const label = button.textContent.replace(/\s*\(\d+\)\s*$/, "");
+    button.textContent = `${label} (${count})`;
+    button.classList.toggle("active", filter === projectLandingFilter);
+  });
 
   if (!roots.length) {
-    container.innerHTML = `<div class="empty">No projects yet.</div>`;
+    container.innerHTML = `<div class="empty projects-empty">No projects match this filter.</div>`;
     return;
   }
 
   container.innerHTML = roots.map(project => {
-    const status = (project.status || "").toLowerCase();
-    const complete = status === "complete";
-    const attention = !complete && status !== "planned";
-    const badgeClass = complete ? "complete" : (attention ? "attention" : "");
-    const estimate = project.estimatedCost != null
-      ? `<div class="project-cost">${money.format(project.estimatedCost)} estimated</div>`
-      : "";
+    const status = project.status || "Planned";
+    const statusClass = projectLandingStatusClass(status);
+    const children = allProjects.filter(p => Number(p.parentProjectId) === Number(project.id));
     const spent = Number(project.actualSpent || 0);
-    const spentLine = spent > 0
-      ? `<div class="project-spend">${money.format(spent)} spent</div>`
-      : "";
-    const meta = [project.purpose, project.contractorName].filter(Boolean).join(" · ");
+    const estimate = project.estimatedCost != null ? Number(project.estimatedCost) : null;
+    const target = project.targetDate ? formatDateOnly(project.targetDate) : null;
+    const notes = String(project.notes || "").trim();
+    const shortNotes = notes.length > 135 ? `${notes.slice(0, 132).trim()}…` : notes;
 
-    return `<section class="project-card" role="button" tabindex="0" data-project-id="${project.id}" aria-label="Open ${escapeAttribute(project.name)} details">
-      <div class="project-top">
-        <div>
-          <h3 class="project-name">${escapeHtml(project.name)}</h3>
-          ${meta ? `<div class="project-meta">${escapeHtml(meta)}</div>` : ""}
+    const nextStep = target
+      ? `<strong>${escapeHtml(projectLandingNextStep(status))}</strong><span>${escapeHtml(target)}</span>`
+      : `<strong>${escapeHtml(projectLandingNextStep(status))}</strong><span>${escapeHtml(projectLandingNextStepSubtext(status))}</span>`;
+
+    return `<article class="project-workspace-row" data-project-id="${project.id}">
+      <div class="project-row-main">
+        <div class="project-row-icon" aria-hidden="true">${projectLandingIcon(project)}</div>
+        <div class="project-row-copy">
+          <h3>${escapeHtml(project.name)}</h3>
+          <div class="project-row-meta">
+            ${project.purpose ? `<span>${escapeHtml(project.purpose)}</span>` : ""}
+            ${children.length ? `<span>${children.length} included item${children.length === 1 ? "" : "s"}</span>` : ""}
+          </div>
+          ${shortNotes ? `<p>${escapeHtml(shortNotes)}</p>` : ""}
         </div>
-        <span class="badge ${badgeClass}">${escapeHtml(project.status)}</span>
       </div>
-      ${spentLine}
-      ${estimate}
-      ${project.notes ? `<p class="project-notes">${escapeHtml(project.notes)}</p>` : ""}
-    </section>`;
+
+      <div class="project-row-stat">
+        <span class="project-row-label">Status</span>
+        <strong class="project-status-pill ${statusClass}">${escapeHtml(status)}</strong>
+      </div>
+
+      <div class="project-row-stat project-row-money">
+        <span class="project-row-label">Estimated</span>
+        <strong>${estimate != null ? money.format(estimate) : "—"}</strong>
+        ${spent > 0 ? `<span>${money.format(spent)} spent</span>` : `<span>No posted spend</span>`}
+      </div>
+
+      <div class="project-row-stat project-row-next">
+        <span class="project-row-label">Next step</span>
+        ${nextStep}
+      </div>
+
+      <button class="project-open-btn" type="button" data-project-open="${project.id}">
+        View project <span aria-hidden="true">→</span>
+      </button>
+    </article>`;
   }).join("");
 
   bindRenderedProjectEvents(container);
 }
 
+function updateProjectLandingCounts(projects) {
+  const roots = projects.filter(p => p.parentProjectId == null);
+  const normalized = p => String(p.status || "").trim().toLowerCase();
+  const completed = roots.filter(p => ["complete", "closed"].includes(normalized(p))).length;
+  const open = roots.filter(p => !["complete", "closed", "cancelled"].includes(normalized(p))).length;
+
+  const setText = (selector, value) => {
+    const element = document.querySelector(selector);
+    if (element) element.textContent = String(value);
+  };
+  setText("#openProjectCount", open);
+  setText("#completedProjectCount", completed);
+  setText("#totalProjectCount", roots.length);
+  setText("#sidebarTaskCount", state.data?.summary?.totalItems ?? "");
+}
+
+function projectLandingStatusClass(status) {
+  const value = String(status || "").trim().toLowerCase();
+  if (["complete", "closed"].includes(value)) return "complete";
+  if (["in progress"].includes(value)) return "in-progress";
+  if (["getting bids", "research"].includes(value)) return "bids";
+  if (["scheduled", "approved"].includes(value)) return "scheduled";
+  if (["waiting", "on hold"].includes(value)) return "waiting";
+  if (["cancelled"].includes(value)) return "cancelled";
+  return "planned";
+}
+
+function projectLandingNextStep(status) {
+  const value = String(status || "").trim().toLowerCase();
+  if (value === "getting bids") return "Review bids";
+  if (value === "research") return "Find contractors";
+  if (value === "scheduled") return "Project scheduled";
+  if (value === "approved") return "Schedule work";
+  if (value === "in progress") return "Work underway";
+  if (value === "closing / punch list") return "Finish punch list";
+  if (value === "waiting") return "Waiting";
+  if (value === "on hold") return "Revisit project";
+  if (value === "complete" || value === "closed") return "Completed";
+  if (value === "cancelled") return "Cancelled";
+  return "Define next step";
+}
+
+function projectLandingNextStepSubtext(status) {
+  const value = String(status || "").trim().toLowerCase();
+  if (value === "getting bids") return "Compare contractor proposals";
+  if (value === "research") return "Make the first call";
+  if (value === "in progress") return "Track the work";
+  if (value === "closing / punch list") return "Close remaining items";
+  if (value === "complete" || value === "closed") return "No action needed";
+  return "No target date set";
+}
+
+function projectLandingIcon(project) {
+  const name = `${project.name || ""} ${project.purpose || ""}`.toLowerCase();
+  if (name.includes("kitchen")) return "⌂";
+  if (name.includes("paint")) return "▤";
+  if (name.includes("landscap") || name.includes("yard")) return "♣";
+  if (name.includes("window")) return "▦";
+  if (name.includes("carpet") || name.includes("floor")) return "▥";
+  if (name.includes("siding") || name.includes("exterior")) return "⌂";
+  return "◆";
+}
+
+function bindProjectLandingControls() {
+  document.querySelector("#projectLandingFilters")?.addEventListener("click", event => {
+    const button = event.target.closest("[data-project-filter]");
+    if (!button) return;
+    projectLandingFilter = button.dataset.projectFilter || "all";
+    renderProjects();
+  });
+
+  document.querySelector("#projectLandingSort")?.addEventListener("change", event => {
+    projectLandingSort = event.target.value || "priority";
+    renderProjects();
+  });
+}
+
 function bindRenderedProjectEvents(container) {
   container.querySelectorAll("[data-project-id]").forEach(card => {
-    card.addEventListener("click", () => openProjectDialog(Number(card.dataset.projectId)));
-    card.addEventListener("keydown", event => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        openProjectDialog(Number(card.dataset.projectId));
-      }
+    card.addEventListener("click", event => {
+      if (event.target.closest("button, a, input, select")) return;
+      openProjectDialog(Number(card.dataset.projectId));
+    });
+  });
+
+  container.querySelectorAll("[data-project-open]").forEach(button => {
+    button.addEventListener("click", event => {
+      event.stopPropagation();
+      openProjectDialog(Number(button.dataset.projectOpen));
     });
   });
 }
@@ -87,6 +227,7 @@ let expandedProjectContractorIds = new Set();
 let showHistoricalProjectBidders = false;
 
 function bindProjectDetails() {
+  bindProjectLandingControls();
   document.querySelector("#addProjectButton")?.addEventListener("click", () => openProjectEditor());
   document.querySelector("#addContractorButton")?.addEventListener("click", () => openContractorEditor());
   document.querySelector("#contractors")?.addEventListener("click", handleContractorListClick);
@@ -337,6 +478,33 @@ function formatProjectCurrency(value) {
   });
 }
 
+function formatProjectPhone(value) {
+  if (!value) return "";
+
+  const raw = String(value).trim();
+  const digits = raw.replace(/\D/g, "");
+  const tenDigits = digits.length === 11 && digits.startsWith("1")
+    ? digits.slice(1)
+    : digits;
+
+  if (tenDigits.length !== 10) return raw;
+
+  return `(${tenDigits.slice(0, 3)}) ${tenDigits.slice(3, 6)}-${tenDigits.slice(6)}`;
+}
+
+function formatProjectActivityWhen(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
+}
+
 function nullableProjectNumber(value) {
   if (value == null || String(value).trim() === "") return null;
   const parsed = Number(value);
@@ -453,6 +621,12 @@ function renderProjectDetails(detail) {
   const photos = renderProjectPhotos(projectPhotos);
   const attachments = renderProjectDocuments(documents);
   const contractors = renderProjectContractors(detail.contractors || [], allAttachments);
+  const selectedContractor = (detail.contractors || []).find(c => c.isSelected) || null;
+  const detailMeta = [
+    p.purpose,
+    selectedContractor?.name || null,
+    completed ? `Completed ${completed}` : null
+  ].filter(Boolean);
 
   body.innerHTML = `
     <div class="project-detail-summary">
@@ -466,8 +640,8 @@ function renderProjectDetails(detail) {
       <div class="project-detail-stat"><span>Files</span><strong>${detail.documentCount || 0}</strong></div>
     </div>
 
-    ${[p.purpose, p.contractorName, completed ? `Completed ${completed}` : null].filter(Boolean).length
-      ? `<div class="project-meta">${escapeHtml([p.purpose, p.contractorName, completed ? `Completed ${completed}` : null].filter(Boolean).join(" · "))}</div>`
+    ${detailMeta.length
+      ? `<div class="project-meta">${escapeHtml(detailMeta.join(" · "))}</div>`
       : ""}
 
     ${p.notes ? `<p class="project-notes">${escapeHtml(p.notes)}</p>` : ""}
@@ -475,8 +649,10 @@ function renderProjectDetails(detail) {
 
     <div class="project-detail-section">
       <div class="project-detail-section-head">
-        <h3>Contractors & bids</h3>
-        <button type="button" class="secondary-button" data-add-project-contractor>+ Add contractor</button>
+        <h3>${["Planned", "Research", "Getting Bids"].includes(p.status) ? "Contractors contacted for bids" : "Contractors & bids"}</h3>
+        <button type="button" class="secondary-button" data-add-project-contractor>
+          ${["Planned", "Research", "Getting Bids"].includes(p.status) ? "+ Log contractor call" : "+ Add contractor"}
+        </button>
       </div>
       ${contractors}
     </div>
@@ -559,16 +735,19 @@ function renderProjectContractors(contractors, attachments) {
     ? selected
     : contractors;
 
-  const hiddenHistoryCount = selected.length ? Math.max(0, contractors.length - selected.length) : 0;
+  const hiddenHistoryCount = selected.length
+    ? Math.max(0, contractors.length - selected.length)
+    : 0;
 
   return `
-    <div style="display:grid;gap:8px">
-      <div style="display:grid;grid-template-columns:minmax(170px,1.4fr) minmax(125px,1fr) 120px 130px 105px 70px;gap:10px;padding:8px 10px;font-weight:700;border-bottom:1px solid #ddd">
+    <div class="bidder-grid">
+      <div class="bidder-grid-header">
         <div>Contractor</div>
         <div>Contact</div>
-        <div>Phone</div>
         <div>Status</div>
         <div>Current bid</div>
+        <div>Last contact</div>
+        <div>Next appointment</div>
         <div></div>
       </div>
 
@@ -576,33 +755,70 @@ function renderProjectContractors(contractors, attachments) {
         const contractorContacts = contractor.vendorId
           ? contacts.filter(c => Number(c.vendorId) === Number(contractor.vendorId))
           : [];
-        const primaryContact = contractorContacts.find(c => c.isPrimary) || contractorContacts[0] || null;
+        const primaryContact =
+          contractorContacts.find(c => c.isPrimary) ||
+          contractorContacts[0] ||
+          null;
+
         const currentProposal = proposals.find(p =>
           Number(p.projectContractorId) === Number(contractor.id) && p.isCurrent
         );
+
+        const lastActivity =
+          projectContractorLastContact(contractor.id, activities);
+        const nextAppointment =
+          projectContractorNextAppointment(contractor.id, activities);
+
         const bidAmount = currentProposal?.amount ?? contractor.bidAmount;
         const selectedBadge = contractor.isSelected
           ? `<span class="badge complete" style="margin-left:6px">Awarded</span>`
           : "";
 
-        return `<div style="display:grid;grid-template-columns:minmax(170px,1.4fr) minmax(125px,1fr) 120px 130px 105px 70px;gap:10px;align-items:center;padding:10px;border-bottom:1px solid #e6e0d8">
-          <div><strong>${escapeHtml(contractor.name)}</strong>${selectedBadge}</div>
-          <div>${escapeHtml(primaryContact?.name || "—")}</div>
-          <div>${escapeHtml(primaryContact?.phone || contractor.phone || "—")}</div>
-          <div>${escapeHtml(contractor.status)}</div>
-          <div><strong>${bidAmount != null ? money.format(Number(bidAmount)) : "—"}</strong></div>
-          <div><button type="button" class="primary-button" style="padding:7px 12px" data-open-project-contractor="${contractor.id}">Open</button></div>
+        const phone = formatProjectPhone(primaryContact?.phone || contractor.phone || "");
+
+        return `<div class="bidder-grid-row">
+          <div class="bidder-name">
+            <strong>${escapeHtml(contractor.name)}</strong>${selectedBadge}
+          </div>
+
+          <div class="bidder-contact">
+            <strong>${escapeHtml(primaryContact?.name || "—")}</strong>
+            <span>${escapeHtml(phone || "—")}</span>
+          </div>
+
+          <div><span class="badge">${escapeHtml(contractor.status)}</span></div>
+
+          <div class="bidder-money">
+            <strong>${bidAmount != null ? money.format(Number(bidAmount)) : "—"}</strong>
+          </div>
+
+          <div title="${lastActivity ? escapeAttribute(`${lastActivity.activityType || "Activity"}: ${lastActivity.summary || ""}`) : ""}">
+            ${lastActivity ? escapeHtml(formatProjectActivityWhen(lastActivity.activityAt)) : "—"}
+          </div>
+
+          <div title="${nextAppointment ? escapeAttribute(nextAppointment.summary || "") : ""}">
+            ${nextAppointment ? escapeHtml(formatProjectActivityWhen(nextAppointment.activityAt)) : "—"}
+          </div>
+
+          <div class="bidder-actions">
+            <button type="button" class="secondary-button"
+                    data-followup-project-contractor="${contractor.id}">Update</button>
+            <button type="button" class="primary-button"
+                    data-open-project-contractor="${contractor.id}">Open</button>
+          </div>
         </div>`;
       }).join("")}
 
       ${hiddenHistoryCount
-        ? `<button type="button" class="secondary-button" data-show-project-bid-history style="justify-self:start;margin-top:6px">View ${hiddenHistoryCount} other bidder${hiddenHistoryCount === 1 ? "" : "s"} / history</button>`
+        ? `<button type="button" class="secondary-button" data-show-project-bid-history style="justify-self:start;margin:10px 12px">
+            View ${hiddenHistoryCount} other bidder${hiddenHistoryCount === 1 ? "" : "s"} / history
+          </button>`
         : ""}
     </div>`;
 }
 
 let activeProjectContractorDetailsId = null;
-let activeProjectContractorDetailsTab = "overview";
+let activeProjectContractorDetailsTab = "activity";
 
 function ensureProjectContractorDetailsDialog() {
   let dialog = document.querySelector("#projectContractorDetailsDialog");
@@ -612,8 +828,8 @@ function ensureProjectContractorDetailsDialog() {
   dialog.id = "projectContractorDetailsDialog";
   dialog.className = "modal project-dialog";
   dialog.innerHTML = `
-    <div class="modal-card"
-         style="width:min(980px,calc(100vw - 32px));max-width:980px;padding:0;overflow:hidden">
+    <div class="modal-card contractor-detail-card"
+         style="width:min(900px,calc(100vw - 48px));max-width:900px;padding:0;overflow:hidden">
       <div class="modal-header"
            style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px">
         <div>
@@ -627,12 +843,13 @@ function ensureProjectContractorDetailsDialog() {
       </div>
 
       <div id="projectContractorDetailsTabs"
-           style="display:flex;gap:6px;padding:12px 20px;border-bottom:1px solid #e6e0d8;background:#faf7f2">
+           class="contractor-detail-tabs"
+           style="display:flex;flex-wrap:wrap;gap:6px;padding:12px 20px;border-bottom:1px solid #e6e0d8;background:#faf7f2">
       </div>
 
       <div id="projectContractorDetailsBody"
-           class="modal-body"
-           style="padding:22px 26px;min-height:390px;max-height:62vh;overflow:auto">
+           class="modal-body contractor-detail-body"
+           style="padding:22px 26px;min-height:390px;max-height:62vh;overflow-y:auto;overflow-x:hidden">
       </div>
 
       <div class="modal-actions"
@@ -675,7 +892,7 @@ function currentProjectContractorDetailsData() {
   ) || null;
 }
 
-function openProjectContractorDetails(contractorId, tab = "overview") {
+function openProjectContractorDetails(contractorId, tab = "activity") {
   activeProjectContractorDetailsId = Number(contractorId);
   activeProjectContractorDetailsTab = tab;
 
@@ -702,9 +919,15 @@ function renderProjectContractorDetails() {
     return;
   }
 
+  const contractorProposalIds = (detail.proposals || [])
+    .filter(p => Number(p.projectContractorId) === Number(contractor.id))
+    .map(p => Number(p.id));
+
   const contractorFiles = (detail.attachments || []).filter(a =>
-    a.entityType === "ProjectContractor" &&
-    Number(a.entityId) === Number(contractor.id)
+    (a.entityType === "ProjectContractor" &&
+     Number(a.entityId) === Number(contractor.id)) ||
+    (a.entityType === "ProjectContractorProposal" &&
+     contractorProposalIds.includes(Number(a.entityId)))
   );
 
   const contacts = contractor.vendorId
@@ -716,10 +939,10 @@ function renderProjectContractorDetails() {
   );
 
   const tabDefs = [
+    ["activity", `Activity (${activities.length})`],
     ["overview", "Overview"],
     ["contacts", `Contacts (${contacts.length})`],
-    ["activity", `Activity (${activities.length})`],
-    ["proposals", `Proposals (${(detail.proposals || []).filter(p => Number(p.projectContractorId) === Number(contractor.id)).length})`],
+    ["proposals", `Bids (${(detail.proposals || []).filter(p => Number(p.projectContractorId) === Number(contractor.id)).length})`],
     ["files", `Files (${contractorFiles.length})`],
     ["notes", "Notes"]
   ];
@@ -749,7 +972,7 @@ function renderProjectContractorDetails() {
     const proposals = (detail.proposals || []).filter(
       p => Number(p.projectContractorId) === Number(contractor.id)
     );
-    body.innerHTML = renderProjectContractorProposalsTab(contractor, proposals);
+    body.innerHTML = renderProjectContractorProposalsTab(contractor, proposals, detail.attachments || []);
     return;
   }
 
@@ -787,7 +1010,7 @@ function renderProjectContractorOverviewTab(contractor, contacts, activities, fi
       <section style="border:1px solid #e0d8ce;border-radius:12px;padding:16px">
         <div class="eyebrow">COMPANY</div>
         <h3 style="margin:6px 0 12px">${escapeHtml(contractor.name)}</h3>
-        ${contractor.phone ? `<div>${escapeHtml(contractor.phone)}</div>` : ""}
+        ${contractor.phone ? `<div>${escapeHtml(formatProjectPhone(contractor.phone))}</div>` : ""}
         ${contractor.email ? `<div>${escapeHtml(contractor.email)}</div>` : ""}
         ${contractor.website ? `<div>${escapeHtml(contractor.website)}</div>` : ""}
         ${address.length ? `<div style="margin-top:10px">${address.map(x => escapeHtml(x)).join("<br>")}</div>` : ""}
@@ -799,7 +1022,7 @@ function renderProjectContractorOverviewTab(contractor, contacts, activities, fi
         ${primaryContact ? `
           <h3 style="margin:6px 0 8px">${escapeHtml(primaryContact.name)}</h3>
           ${primaryContact.title ? `<div class="expense-meta">${escapeHtml(primaryContact.title)}</div>` : ""}
-          ${primaryContact.phone ? `<div style="margin-top:8px">${escapeHtml(primaryContact.phone)}</div>` : ""}
+          ${primaryContact.phone ? `<div style="margin-top:8px">${escapeHtml(formatProjectPhone(primaryContact.phone))}</div>` : ""}
           ${primaryContact.email ? `<div>${escapeHtml(primaryContact.email)}</div>` : ""}
         ` : `<div class="empty" style="margin-top:10px">No named contact yet.</div>`}
 
@@ -837,7 +1060,7 @@ function renderProjectContractorContactsTab(contractor, contacts) {
             </div>
             ${contact.isPrimary ? `<span class="badge">Primary</span>` : ""}
           </div>
-          ${contact.phone ? `<div style="margin-top:10px">${escapeHtml(contact.phone)}</div>` : ""}
+          ${contact.phone ? `<div style="margin-top:10px">${escapeHtml(formatProjectPhone(contact.phone))}</div>` : ""}
           ${contact.email ? `<div>${escapeHtml(contact.email)}</div>` : ""}
           ${contact.notes ? `<p class="project-notes">${escapeHtml(contact.notes)}</p>` : ""}
           <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
@@ -856,7 +1079,7 @@ function renderProjectContractorContactsTab(contractor, contacts) {
   `;
 }
 
-function renderProjectContractorProposalsTab(contractor, proposals) {
+function renderProjectContractorProposalsTab(contractor, proposals, attachments) {
   const sorted = [...proposals].sort((a, b) =>
     Number(b.isCurrent) - Number(a.isCurrent) ||
     String(b.receivedDate || "").localeCompare(String(a.receivedDate || "")) ||
@@ -866,58 +1089,116 @@ function renderProjectContractorProposalsTab(contractor, proposals) {
   return `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
       <div>
-        <h3 style="margin:0">Proposal history</h3>
-        <div class="expense-meta">Old bids stay here. One proposal is the current working bid.</div>
+        <h3 style="margin:0">Bid history</h3>
+        <div class="expense-meta">Old bids stay here. One bid is the current working bid.</div>
       </div>
-      <button type="button" class="primary-button" data-add-project-contractor-proposal="${contractor.id}">+ Add proposal</button>
+      <button type="button" class="primary-button" data-add-project-contractor-proposal="${contractor.id}">+ Add bid</button>
     </div>
 
     ${sorted.length ? `<div style="display:grid;gap:10px">
-      ${sorted.map(proposal => `
-        <article style="border:1px solid #e0d8ce;border-radius:12px;padding:14px;display:grid;grid-template-columns:1fr auto;gap:12px">
-          <div>
-            <div style="display:flex;align-items:center;gap:8px">
-              <strong>${proposal.amount != null ? money.format(Number(proposal.amount)) : "Amount not entered"}</strong>
-              ${proposal.isCurrent ? `<span class="badge complete">Current</span>` : ""}
+      ${sorted.map(proposal => {
+        const bidFiles = (attachments || []).filter(a =>
+          a.entityType === "ProjectContractorProposal" &&
+          Number(a.entityId) === Number(proposal.id)
+        );
+
+        return `
+          <article class="bid-history-card">
+            <div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <strong>${proposal.amount != null ? money.format(Number(proposal.amount)) : "Amount not entered"}</strong>
+                ${proposal.isCurrent ? `<span class="badge complete">Current</span>` : ""}
+              </div>
+              <div class="expense-meta">
+                Received ${escapeHtml(formatDateOnly(proposal.receivedDate))}
+                ${proposal.revisionLabel ? ` · ${escapeHtml(proposal.revisionLabel)}` : ""}
+              </div>
+              ${proposal.notes ? `<p class="project-notes">${escapeHtml(proposal.notes)}</p>` : ""}
             </div>
-            <div class="expense-meta">
-              Received ${escapeHtml(formatDateOnly(proposal.receivedDate))}
-              ${proposal.revisionLabel ? ` · ${escapeHtml(proposal.revisionLabel)}` : ""}
+
+            <div class="bid-history-files">
+              ${bidFiles.length
+                ? bidFiles.map(file => `
+                    <button type="button"
+                            class="bid-file-link project-contractor-file-trigger"
+                            data-attachment-id="${file.id}"
+                            data-file-name="${escapeAttribute(file.fileName)}"
+                            data-content-type="${escapeAttribute(file.contentType || "")}">
+                      📎 ${escapeHtml(file.fileName)}
+                    </button>
+                  `).join("")
+                : `<span class="expense-meta">No file attached</span>`}
             </div>
-            ${proposal.notes ? `<p class="project-notes">${escapeHtml(proposal.notes)}</p>` : ""}
-          </div>
-        </article>
-      `).join("")}
-    </div>` : `<div class="empty">No proposals received yet.</div>`}
+          </article>`;
+      }).join("")}
+    </div>` : `<div class="empty">No bids received yet.</div>`}
   `;
 }
-
 function renderProjectContractorActivityTab(contractor, activities) {
+  const detail = document.querySelector("#projectDetailBody")?._projectDetail || {};
+  const proposals = (detail.proposals || []).filter(
+    p => Number(p.projectContractorId) === Number(contractor.id)
+  );
+
+  const regularActivities = [...activities]
+    .filter(a => a.activityType !== "Estimate")
+    .map(activity => ({
+      kind: "activity",
+      id: activity.id,
+      activityAt: activity.activityAt,
+      type: activity.activityType || "Note",
+      summary: activity.summary || "Activity"
+    }));
+
+  const bidActivities = proposals.map(proposal => ({
+    kind: "bid",
+    id: proposal.id,
+    activityAt: `${proposal.receivedDate}T12:00:00`,
+    type: "Bid",
+    summary: [
+      "Bid received",
+      proposal.amount != null ? money.format(Number(proposal.amount)) : null,
+      proposal.revisionLabel || null
+    ].filter(Boolean).join(" · ")
+  }));
+
+  const rows = [...regularActivities, ...bidActivities]
+    .sort((a, b) => new Date(b.activityAt || 0) - new Date(a.activityAt || 0));
+
   return `
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
+    <div class="contractor-activity-heading">
       <div>
-        <h3 style="margin:0">Activity</h3>
-        <div class="expense-meta">Calls, emails, texts, meetings, walkthroughs, and notes.</div>
+        <h3>Activity</h3>
+        <div class="expense-meta">Calls, emails, appointments, bids, walkthroughs and notes.</div>
       </div>
       <button type="button"
               class="primary-button"
               data-add-project-contractor-activity="${contractor.id}">+ Log activity</button>
     </div>
 
-    ${activities.length ? `<div class="expense-list">
-      ${activities.map(activity => `
-        <div class="expense-row">
-          <div class="expense-main">
-            <strong>${escapeHtml(activity.activityType)} · ${escapeHtml(activity.summary)}</strong>
-            <div class="expense-meta">${new Date(activity.activityAt).toLocaleString()}</div>
-            ${activity.notes ? `<div class="project-notes">${escapeHtml(activity.notes)}</div>` : ""}
-          </div>
+    ${rows.length ? `
+      <div class="contractor-activity-grid">
+        <div class="contractor-activity-grid-head">
+          <div>Date / time</div>
+          <div>Type</div>
+          <div>Summary</div>
         </div>
-      `).join("")}
-    </div>` : `<div class="empty">No call / email history yet.</div>`}
+
+        ${rows.map(row => `
+          <button type="button"
+                  class="contractor-activity-row"
+                  ${row.kind === "bid"
+                    ? `data-view-project-contractor-bid="${row.id}"`
+                    : `data-view-project-contractor-activity="${row.id}"`}>
+            <span>${escapeHtml(formatProjectActivityWhen(row.activityAt))}</span>
+            <span>${escapeHtml(row.type)}</span>
+            <strong>${escapeHtml(row.summary)}</strong>
+          </button>
+        `).join("")}
+      </div>
+    ` : `<div class="empty">No contractor activity yet.</div>`}
   `;
 }
-
 function renderProjectContractorFilesTab(contractor, files) {
   return `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
@@ -1216,6 +1497,155 @@ async function deleteProjectContractorContact(contractorId, contactId) {
   showToast("Contact deleted.");
 }
 
+
+
+function ensureProjectContractorBidDetailDialog() {
+  let dialog = document.querySelector("#projectContractorBidDetailDialog");
+  if (dialog) return dialog;
+
+  dialog = document.createElement("dialog");
+  dialog.id = "projectContractorBidDetailDialog";
+  dialog.className = "modal project-dialog";
+  dialog.innerHTML = `
+    <div class="modal-card activity-detail-card" style="width:min(620px,calc(100vw - 64px));max-width:620px;padding:0;overflow:hidden">
+      <div class="modal-header">
+        <div>
+          <div class="eyebrow">BID HISTORY</div>
+          <h2 style="margin:.35rem 0 0">Bid details</h2>
+        </div>
+        <button type="button" class="modal-close" data-close-bid-detail aria-label="Close">×</button>
+      </div>
+
+      <div class="modal-body activity-detail-body" style="display:grid;gap:14px;padding:22px 26px">
+        <div class="activity-detail-grid">
+          <div><span>Received</span><strong id="bidDetailWhen">—</strong></div>
+          <div><span>Amount</span><strong id="bidDetailAmount">—</strong></div>
+        </div>
+
+        <div class="activity-detail-section">
+          <span>Bid / revision</span>
+          <strong id="bidDetailRevision">—</strong>
+        </div>
+
+        <div class="activity-detail-section">
+          <span>Notes</span>
+          <div id="bidDetailNotes" class="project-notes">—</div>
+        </div>
+
+        <div class="activity-detail-section">
+          <span>File</span>
+          <div id="bidDetailFiles">No file attached.</div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="primary-button" data-close-bid-detail>Close</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(dialog);
+  dialog.querySelectorAll("[data-close-bid-detail]").forEach(button =>
+    button.addEventListener("click", () => dialog.close())
+  );
+  return dialog;
+}
+
+function openProjectContractorBidDetail(proposalId) {
+  const detail = document.querySelector("#projectDetailBody")?._projectDetail;
+  if (!detail) return;
+
+  const proposal = (detail.proposals || []).find(p => Number(p.id) === Number(proposalId));
+  if (!proposal) return;
+
+  const files = (detail.attachments || []).filter(a =>
+    a.entityType === "ProjectContractorProposal" &&
+    Number(a.entityId) === Number(proposal.id)
+  );
+
+  const dialog = ensureProjectContractorBidDetailDialog();
+  dialog.querySelector("#bidDetailWhen").textContent = formatDateOnly(proposal.receivedDate);
+  dialog.querySelector("#bidDetailAmount").textContent =
+    proposal.amount != null ? money.format(Number(proposal.amount)) : "Amount not entered";
+  dialog.querySelector("#bidDetailRevision").textContent = proposal.revisionLabel || "Original bid";
+  dialog.querySelector("#bidDetailNotes").textContent = proposal.notes || "No additional notes.";
+
+  dialog.querySelector("#bidDetailFiles").innerHTML = files.length
+    ? files.map(file => `
+        <button type="button"
+                class="bid-file-link project-contractor-file-trigger"
+                data-attachment-id="${file.id}"
+                data-file-name="${escapeAttribute(file.fileName)}"
+                data-content-type="${escapeAttribute(file.contentType || "")}">
+          📎 ${escapeHtml(file.fileName)}
+        </button>
+      `).join("")
+    : `<span class="expense-meta">No file attached.</span>`;
+
+  dialog.showModal();
+}
+
+function ensureProjectContractorActivityDetailDialog() {
+  let dialog = document.querySelector("#projectContractorActivityDetailDialog");
+  if (dialog) return dialog;
+
+  dialog = document.createElement("dialog");
+  dialog.id = "projectContractorActivityDetailDialog";
+  dialog.className = "modal project-dialog";
+  dialog.innerHTML = `
+    <div class="modal-card activity-detail-card" style="width:min(620px,calc(100vw - 64px));max-width:620px;padding:0;overflow:hidden">
+      <div class="modal-header">
+        <div>
+          <div class="eyebrow">CONTRACTOR HISTORY</div>
+          <h2 style="margin:.35rem 0 0">Activity details</h2>
+        </div>
+        <button type="button" class="modal-close" data-close-activity-detail aria-label="Close">×</button>
+      </div>
+
+      <div class="modal-body activity-detail-body" style="display:grid;gap:14px;padding:22px 26px">
+        <div class="activity-detail-grid">
+          <div><span>Type</span><strong id="activityDetailType">—</strong></div>
+          <div><span>Date / time</span><strong id="activityDetailWhen">—</strong></div>
+        </div>
+
+        <div class="activity-detail-section">
+          <span>Summary</span>
+          <strong id="activityDetailSummary">—</strong>
+        </div>
+
+        <div class="activity-detail-section">
+          <span>Details</span>
+          <div id="activityDetailNotes" class="project-notes">—</div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="primary-button" data-close-activity-detail>Close</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(dialog);
+  dialog.querySelectorAll("[data-close-activity-detail]").forEach(button =>
+    button.addEventListener("click", () => dialog.close())
+  );
+
+  return dialog;
+}
+
+function openProjectContractorActivityDetail(activityId) {
+  const detail = document.querySelector("#projectDetailBody")?._projectDetail;
+  if (!detail) return;
+
+  const activity = (detail.activities || []).find(a => Number(a.id) === Number(activityId));
+  if (!activity) return;
+
+  const dialog = ensureProjectContractorActivityDetailDialog();
+  dialog.querySelector("#activityDetailType").textContent = activity.activityType || "Note";
+  dialog.querySelector("#activityDetailWhen").textContent = new Date(activity.activityAt).toLocaleString();
+  dialog.querySelector("#activityDetailSummary").textContent = activity.summary || "Activity";
+  dialog.querySelector("#activityDetailNotes").textContent = activity.notes || "No additional details.";
+  dialog.showModal();
+}
+
 function ensureProjectContractorActivityDialog() {
   let dialog = document.querySelector("#projectContractorActivityDialog");
   if (dialog) return dialog;
@@ -1300,6 +1730,23 @@ async function saveProjectContractorActivity(event) {
 
 let activeProjectContractorProposalContractorId = null;
 
+
+function parseProposalCurrency(value) {
+  const normalized = String(value || "").replace(/[$,\s]/g, "").trim();
+  if (!normalized) return null;
+  const amount = Number(normalized);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function formatProposalCurrency(value) {
+  const amount = parseProposalCurrency(value);
+  if (amount == null) return "";
+  return amount.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+}
+
 function ensureProjectContractorProposalDialog() {
   let dialog = document.querySelector("#projectContractorProposalDialog");
   if (dialog) return dialog;
@@ -1311,27 +1758,45 @@ function ensureProjectContractorProposalDialog() {
     <form id="projectContractorProposalForm" class="modal-card" method="dialog"
           style="width:min(580px,calc(100vw - 32px));max-width:580px;padding:0;overflow:hidden">
       <div class="modal-header">
-        <div><div class="eyebrow">PROPOSAL / BID</div><h2 style="margin:.35rem 0 0">Add proposal</h2></div>
+        <div><div class="eyebrow">BID</div><h2 style="margin:.35rem 0 0">Add bid</h2></div>
         <button type="button" class="modal-close" data-close-project-contractor-proposal aria-label="Close">×</button>
       </div>
       <div class="modal-body" style="display:grid;gap:14px;padding:22px 26px">
         <div id="projectContractorProposalError" class="form-error" hidden></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
           <label style="display:grid;gap:6px"><span>Received</span><input id="projectContractorProposalDate" type="date" required></label>
-          <label style="display:grid;gap:6px"><span>Amount</span><input id="projectContractorProposalAmount" type="number" min="0" step="0.01"></label>
+          <label style="display:grid;gap:6px"><span>Amount</span><input id="projectContractorProposalAmount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"></label>
         </div>
-        <label style="display:grid;gap:6px"><span>Revision / label</span><input id="projectContractorProposalRevision" maxlength="100" placeholder="Original, Revision 2, Added sheathing…"></label>
+        <label style="display:grid;gap:6px"><span>Bid / revision</span><input id="projectContractorProposalRevision" maxlength="100" placeholder="Bid #0288, Revision 2, Added sheathing…"></label>
         <label style="display:grid;gap:6px"><span>Notes</span><textarea id="projectContractorProposalNotes" rows="4" maxlength="4000"></textarea></label>
-        <label style="display:flex;align-items:center;gap:8px"><input id="projectContractorProposalCurrent" type="checkbox" checked><span>Make this the current working proposal</span></label>
+
+        <label style="display:grid;gap:6px">
+          <span>Bid file</span>
+          <input id="projectContractorProposalFile" type="file" accept="application/pdf,image/*">
+          <small class="expense-meta">Optional. PDF or image, up to 20 MB.</small>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:8px"><input id="projectContractorProposalCurrent" type="checkbox" checked><span>Make this the current working bid</span></label>
       </div>
       <div class="modal-actions">
         <button type="button" class="secondary-button" data-close-project-contractor-proposal>Cancel</button>
-        <button type="submit" class="primary-button">Save proposal</button>
+        <button type="submit" class="primary-button">Save bid</button>
       </div>
     </form>`;
 
   document.body.appendChild(dialog);
   dialog.querySelectorAll("[data-close-project-contractor-proposal]").forEach(b => b.addEventListener("click", () => dialog.close()));
+
+  const amountInput = dialog.querySelector("#projectContractorProposalAmount");
+  amountInput?.addEventListener("focus", () => {
+    const amount = parseProposalCurrency(amountInput.value);
+    amountInput.value = amount == null ? "" : amount.toFixed(2);
+    amountInput.select();
+  });
+  amountInput?.addEventListener("blur", () => {
+    amountInput.value = formatProposalCurrency(amountInput.value);
+  });
+
   dialog.querySelector("#projectContractorProposalForm")?.addEventListener("submit", saveProjectContractorProposal);
   return dialog;
 }
@@ -1343,6 +1808,7 @@ function openProjectContractorProposalEditor(contractorId) {
   dialog.querySelector("#projectContractorProposalAmount").value = "";
   dialog.querySelector("#projectContractorProposalRevision").value = "";
   dialog.querySelector("#projectContractorProposalNotes").value = "";
+  dialog.querySelector("#projectContractorProposalFile").value = "";
   dialog.querySelector("#projectContractorProposalCurrent").checked = true;
   dialog.querySelector("#projectContractorProposalError").hidden = true;
   dialog.showModal();
@@ -1363,7 +1829,7 @@ async function saveProjectContractorProposal(event) {
   const payload = {
     receivedDate,
     revisionLabel: dialog.querySelector("#projectContractorProposalRevision")?.value.trim() || null,
-    amount: amountValue === "" ? null : Number(amountValue),
+    amount: amountValue === "" ? null : parseProposalCurrency(amountValue),
     notes: dialog.querySelector("#projectContractorProposalNotes")?.value.trim() || null,
     isCurrent: dialog.querySelector("#projectContractorProposalCurrent")?.checked === true
   };
@@ -1379,14 +1845,34 @@ async function saveProjectContractorProposal(event) {
     );
     if (!response.ok) throw new Error(await readError(response));
 
+    const createdBid = await response.json();
+    const proposalId = Number(createdBid.id || 0);
+    const proposalFile = dialog.querySelector("#projectContractorProposalFile")?.files?.[0] || null;
+
+    if (proposalFile && proposalId) {
+      const formData = new FormData();
+      formData.append("file", proposalFile);
+
+      const uploadResponse = await fetch(
+        `/api/home/projects/${activeProjectId}/contractors/${activeProjectContractorProposalContractorId}/proposals/${proposalId}/attachment`,
+        {
+          method: "POST",
+          body: formData
+        }
+      );
+
+      if (!uploadResponse.ok)
+        throw new Error(await readError(uploadResponse));
+    }
+
     dialog.close();
     await loadProjectDetails(activeProjectId);
     activeProjectContractorDetailsTab = "proposals";
     refreshProjectContractorDetails();
-    showToast("Proposal added.");
+    showToast(proposalFile ? "Bid and file added." : "Bid added.");
   } catch (err) {
     console.error(err);
-    error.textContent = err.message || "Could not save proposal.";
+    error.textContent = err.message || "Could not save bid.";
     error.hidden = false;
   }
 }
@@ -1432,13 +1918,12 @@ function renderContractorDirectory() {
           <div>
             <h3 class="project-name">${escapeHtml(contractor.name)}</h3>
             <div class="project-meta">
-              ${escapeHtml(contractor.phone || "No company phone")}
+              ${escapeHtml(formatProjectPhone(contractor.phone) || "No company phone")}
               ${primary?.name ? ` · ${escapeHtml(primary.name)}` : ""}
             </div>
           </div>
           <span class="badge">${(contractor.contacts || []).length} contact${(contractor.contacts || []).length === 1 ? "" : "s"}</span>
         </div>
-        ${contractor.notes ? `<p class="project-notes">${escapeHtml(contractor.notes)}</p>` : ""}
       </section>`;
     }).join("");
 }
@@ -1663,6 +2148,593 @@ function openGlobalContractorContactEditor(vendorId, contact = null) {
   dialog.showModal();
 }
 
+
+
+function projectContractorLastContact(contractorId, activities) {
+  const now = Date.now();
+
+  return (activities || [])
+    .filter(a => Number(a.projectContractorId) === Number(contractorId))
+    .map(a => ({ activity: a, when: new Date(a.activityAt || 0) }))
+    .filter(x => !Number.isNaN(x.when.getTime()) && x.when.getTime() <= now)
+    .sort((a, b) => b.when - a.when)[0]?.activity || null;
+}
+
+function projectContractorNextAppointment(contractorId, activities) {
+  const now = Date.now();
+
+  return (activities || [])
+    .filter(a =>
+      Number(a.projectContractorId) === Number(contractorId) &&
+      ["Meeting", "Walkthrough"].includes(a.activityType))
+    .map(a => ({ activity: a, when: new Date(a.activityAt || 0) }))
+    .filter(x => !Number.isNaN(x.when.getTime()) && x.when.getTime() > now)
+    .sort((a, b) => a.when - b.when)[0]?.activity || null;
+}
+
+function localProjectDateTimeValue(date = new Date()) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, 16);
+}
+
+let followupProjectContractorId = null;
+
+function ensureProjectContractorFollowupDialog() {
+  let dialog = document.querySelector("#projectContractorFollowupDialog");
+  if (dialog) return dialog;
+
+  dialog = document.createElement("dialog");
+  dialog.id = "projectContractorFollowupDialog";
+  dialog.className = "modal project-dialog";
+
+  dialog.innerHTML = `
+    <form id="projectContractorFollowupForm" class="modal-card" method="dialog"
+          style="width:min(680px,calc(100vw - 32px));max-width:680px;padding:0;overflow:hidden">
+      <div class="modal-header">
+        <div>
+          <div class="eyebrow">CONTRACTOR FOLLOW-UP</div>
+          <h2 id="followupContractorTitle" style="margin:.35rem 0 0">Update contractor</h2>
+        </div>
+        <button type="button" class="modal-close" data-close-followup aria-label="Close">×</button>
+      </div>
+
+      <div class="modal-body" style="display:grid;gap:16px;padding:22px 26px">
+        <div id="followupError" class="form-error" hidden></div>
+
+        <fieldset style="border:0;padding:0;margin:0;display:grid;gap:10px">
+          <legend style="font-weight:800;margin-bottom:4px">What happened?</legend>
+          <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px">
+            <label><input type="radio" name="followupType" value="callback" checked> They called me back</label>
+            <label><input type="radio" name="followupType" value="outbound"> I called them</label>
+            <label><input type="radio" name="followupType" value="voicemail"> Left voicemail</label>
+            <label><input type="radio" name="followupType" value="appointment"> Appointment scheduled</label>
+            <label><input type="radio" name="followupType" value="email"> Email</label>
+            <label><input type="radio" name="followupType" value="text"> Text</label>
+          </div>
+        </fieldset>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <label style="display:grid;gap:6px">
+            <span>Person</span>
+            <input id="followupPerson" maxlength="200" placeholder="Optional">
+          </label>
+          <label style="display:grid;gap:6px">
+            <span>Contact date/time</span>
+            <input id="followupContactedAt" type="datetime-local">
+          </label>
+        </div>
+
+        <div id="followupAppointmentFields" hidden
+             style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <label style="display:grid;gap:6px">
+            <span>Appointment date/time</span>
+            <input id="followupAppointmentAt" type="datetime-local">
+          </label>
+          <label style="display:grid;gap:6px">
+            <span>Appointment type</span>
+            <select id="followupAppointmentType">
+              <option value="Meeting">Estimate appointment</option>
+              <option value="Walkthrough">Walkthrough</option>
+            </select>
+          </label>
+        </div>
+
+        <label style="display:grid;gap:6px">
+          <span>Notes</span>
+          <textarea id="followupNotes" rows="5" maxlength="4000"
+                    placeholder="Estimator will call back, appointment Thursday at 10, asked about HardiePlank, etc."></textarea>
+        </label>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="secondary-button" data-close-followup>Cancel</button>
+        <button type="submit" class="primary-button" id="saveFollowupButton">Save update</button>
+      </div>
+    </form>`;
+
+  document.body.appendChild(dialog);
+
+  dialog.querySelectorAll("[data-close-followup]").forEach(button =>
+    button.addEventListener("click", () => dialog.close())
+  );
+
+  dialog.querySelectorAll('input[name="followupType"]').forEach(input => {
+    input.addEventListener("change", () => {
+      const isAppointment =
+        dialog.querySelector('input[name="followupType"]:checked')?.value === "appointment";
+      const fields = dialog.querySelector("#followupAppointmentFields");
+      if (fields) fields.hidden = !isAppointment;
+    });
+  });
+
+  dialog.querySelector("#projectContractorFollowupForm")
+    ?.addEventListener("submit", saveProjectContractorFollowup);
+
+  return dialog;
+}
+
+function openProjectContractorFollowup(contractorId) {
+  const detail = document.querySelector("#projectDetailBody")?._projectDetail;
+  const contractor = (detail?.contractors || [])
+    .find(c => Number(c.id) === Number(contractorId));
+
+  if (!contractor) return;
+
+  followupProjectContractorId = contractor.id;
+
+  const dialog = ensureProjectContractorFollowupDialog();
+  dialog.querySelector("#projectContractorFollowupForm")?.reset();
+  dialog.querySelector("#followupContractorTitle").textContent = contractor.name;
+  dialog.querySelector("#followupContactedAt").value = localProjectDateTimeValue(new Date());
+  dialog.querySelector("#followupAppointmentAt").value = "";
+  dialog.querySelector("#followupAppointmentFields").hidden = true;
+
+  const contacts = detail.contacts || [];
+  const contractorContacts = contractor.vendorId
+    ? contacts.filter(c => Number(c.vendorId) === Number(contractor.vendorId))
+    : [];
+  const primary = contractorContacts.find(c => c.isPrimary) || contractorContacts[0];
+  dialog.querySelector("#followupPerson").value = primary?.name || "";
+
+  const error = dialog.querySelector("#followupError");
+  error.hidden = true;
+  error.textContent = "";
+
+  dialog.showModal();
+}
+
+async function saveProjectContractorFollowup(event) {
+  event.preventDefault();
+
+  const detail = document.querySelector("#projectDetailBody")?._projectDetail;
+  const contractor = (detail?.contractors || [])
+    .find(c => Number(c.id) === Number(followupProjectContractorId));
+
+  if (!contractor || !activeProjectId) return;
+
+  const dialog = ensureProjectContractorFollowupDialog();
+  const error = dialog.querySelector("#followupError");
+  const saveButton = dialog.querySelector("#saveFollowupButton");
+
+  const type = dialog.querySelector('input[name="followupType"]:checked')?.value || "callback";
+  const person = dialog.querySelector("#followupPerson")?.value.trim() || null;
+  const contactedAt = dialog.querySelector("#followupContactedAt")?.value || null;
+  const appointmentAt = dialog.querySelector("#followupAppointmentAt")?.value || null;
+  const appointmentType = dialog.querySelector("#followupAppointmentType")?.value || "Meeting";
+  const notes = dialog.querySelector("#followupNotes")?.value.trim() || null;
+
+  if (type === "appointment" && !appointmentAt) {
+    error.textContent = "Pick the appointment date/time.";
+    error.hidden = false;
+    return;
+  }
+
+  error.hidden = true;
+  saveButton.disabled = true;
+  saveButton.textContent = "Saving…";
+
+  try {
+    let activityType = "Called";
+    let summary = "Called";
+
+    if (type === "callback")
+      summary = person ? `Called back — spoke with ${person}` : "Called back";
+    else if (type === "outbound")
+      summary = person ? `Called — spoke with ${person}` : "Called";
+    else if (type === "voicemail")
+      summary = "Left voicemail";
+    else if (type === "email") {
+      activityType = "Email";
+      summary = person ? `Email — ${person}` : "Email";
+    }
+    else if (type === "text") {
+      activityType = "Text";
+      summary = person ? `Text — ${person}` : "Text";
+    }
+    else if (type === "appointment")
+      summary = person ? `Scheduled appointment with ${person}` : "Scheduled appointment";
+
+    const contactResponse = await fetch(
+      `/api/home/projects/${activeProjectId}/contractors/${contractor.id}/activities`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({
+          activityType,
+          activityAt: contactedAt,
+          summary,
+          notes
+        })
+      }
+    );
+
+    if (!contactResponse.ok) throw new Error(await readError(contactResponse));
+
+    let nextStatus = contractor.status || "Contacted";
+
+    if (type === "appointment") {
+      const appointmentResponse = await fetch(
+        `/api/home/projects/${activeProjectId}/contractors/${contractor.id}/activities`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({
+            activityType: appointmentType,
+            activityAt: appointmentAt,
+            summary: appointmentType === "Walkthrough" ? "Bid walkthrough" : "Bid appointment",
+            notes
+          })
+        }
+      );
+
+      if (!appointmentResponse.ok) throw new Error(await readError(appointmentResponse));
+
+      nextStatus = appointmentType === "Walkthrough"
+        ? "Walkthrough Scheduled"
+        : "Appointment Scheduled";
+    }
+    else if (["Considering", "Callback Pending"].includes(contractor.status)) {
+      nextStatus = "Contacted";
+    }
+
+    if (nextStatus !== contractor.status) {
+      const updateResponse = await fetch(
+        `/api/home/projects/${activeProjectId}/contractors/${contractor.id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({
+            vendorId: contractor.vendorId,
+            status: nextStatus,
+            bidAmount: contractor.bidAmount ?? null,
+            notes: contractor.notes || null,
+            isSelected: contractor.isSelected === true
+          })
+        }
+      );
+
+      if (!updateResponse.ok) throw new Error(await readError(updateResponse));
+    }
+
+    dialog.close();
+    await loadProjectDetails(activeProjectId);
+    showToast("Contractor update saved.");
+  } catch (err) {
+    console.error(err);
+    error.textContent = err.message || "Could not save contractor update.";
+    error.hidden = false;
+  } finally {
+    saveButton.disabled = false;
+    saveButton.textContent = "Save update";
+  }
+}
+
+let quickBidderProjectId = null;
+
+function ensureQuickBidderDialog() {
+  let dialog = document.querySelector("#quickBidderDialog");
+  if (dialog) return dialog;
+
+  dialog = document.createElement("dialog");
+  dialog.id = "quickBidderDialog";
+  dialog.className = "modal project-dialog";
+  dialog.innerHTML = `
+    <form id="quickBidderForm" class="modal-card" method="dialog"
+          style="width:min(680px,calc(100vw - 32px));max-width:680px;padding:0;overflow:hidden">
+      <div class="modal-header">
+        <div>
+          <div class="eyebrow">BID CONTACT</div>
+          <h2 style="margin:.35rem 0 0">Log contractor call</h2>
+        </div>
+        <button type="button" class="modal-close" data-close-quick-bidder aria-label="Close">×</button>
+      </div>
+
+      <div class="modal-body" style="display:grid;gap:16px;padding:22px 26px">
+        <div id="quickBidderError" class="form-error" hidden></div>
+
+        <div style="display:grid;grid-template-columns:minmax(0,1.5fr) minmax(180px,.75fr);gap:14px">
+          <label style="display:grid;gap:6px">
+            <span>Company name *</span>
+            <input id="quickBidderName" maxlength="200" required autocomplete="organization"
+                   placeholder="First Texas Siding and Windows">
+          </label>
+
+          <label style="display:grid;gap:6px">
+            <span>Phone</span>
+            <input id="quickBidderPhone" maxlength="50" type="tel" autocomplete="tel"
+                   placeholder="(832) 680-5500">
+          </label>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <label style="display:grid;gap:6px">
+            <span>Person spoken with</span>
+            <input id="quickBidderPerson" maxlength="200" placeholder="Optional">
+          </label>
+
+          <label style="display:grid;gap:6px">
+            <span>Website</span>
+            <input id="quickBidderWebsite" maxlength="500" placeholder="Optional">
+          </label>
+        </div>
+
+        <label style="display:grid;gap:6px;max-width:320px">
+          <span>Contacted</span>
+          <input id="quickBidderContactedAt" type="datetime-local">
+        </label>
+
+        <label style="display:grid;gap:6px">
+          <span>Call notes</span>
+          <textarea id="quickBidderNotes" rows="4" maxlength="4000"
+                    placeholder="Left voicemail, estimator will call back, appointment Thursday at 10, etc."></textarea>
+        </label>
+
+        <div style="padding:11px 13px;border:1px solid #eadfd7;border-radius:10px;background:#fbf7f2;color:#6b625e;font-size:.82rem;line-height:1.4">
+          One save adds the company to your contractor directory, associates it with this project,
+          records the call, and moves the project into <strong>Getting Bids</strong>.
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="secondary-button" data-close-quick-bidder>Cancel</button>
+        <button type="submit" class="primary-button" id="saveQuickBidderButton">Add to bid list</button>
+      </div>
+    </form>`;
+
+  document.body.appendChild(dialog);
+
+  dialog.querySelectorAll("[data-close-quick-bidder]").forEach(button =>
+    button.addEventListener("click", () => dialog.close())
+  );
+
+  const phoneInput = dialog.querySelector("#quickBidderPhone");
+  phoneInput?.addEventListener("blur", () => {
+    phoneInput.value = formatProjectPhone(phoneInput.value);
+  });
+
+  dialog.querySelector("#quickBidderForm")?.addEventListener("submit", saveQuickBidder);
+
+  return dialog;
+}
+
+async function openQuickBidderEditor() {
+  if (!activeProjectId) return;
+
+  quickBidderProjectId = activeProjectId;
+  await loadContractors();
+
+  const dialog = ensureQuickBidderDialog();
+  dialog.querySelector("#quickBidderForm")?.reset();
+
+  const now = new Date();
+  const offset = now.getTimezoneOffset();
+  dialog.querySelector("#quickBidderContactedAt").value =
+    new Date(now.getTime() - offset * 60000).toISOString().slice(0, 16);
+
+  const error = dialog.querySelector("#quickBidderError");
+  error.hidden = true;
+  error.textContent = "";
+
+  dialog.showModal();
+  window.setTimeout(() => dialog.querySelector("#quickBidderName")?.focus(), 30);
+}
+
+async function saveQuickBidder(event) {
+  event.preventDefault();
+
+  const dialog = ensureQuickBidderDialog();
+  const error = dialog.querySelector("#quickBidderError");
+  const button = dialog.querySelector("#saveQuickBidderButton");
+
+  const name = dialog.querySelector("#quickBidderName")?.value.trim();
+  const phone = dialog.querySelector("#quickBidderPhone")?.value.trim() || null;
+  const person = dialog.querySelector("#quickBidderPerson")?.value.trim() || null;
+  const website = dialog.querySelector("#quickBidderWebsite")?.value.trim() || null;
+  const contactedAt = dialog.querySelector("#quickBidderContactedAt")?.value || null;
+  const notes = dialog.querySelector("#quickBidderNotes")?.value.trim() || null;
+
+  if (!name) {
+    error.textContent = "Company name is required.";
+    error.hidden = false;
+    return;
+  }
+
+  error.hidden = true;
+  button.disabled = true;
+  button.textContent = "Saving…";
+
+  try {
+    await loadContractors();
+
+    // Reuse an existing contractor when the company name already matches.
+    let vendor = contractorDirectory.find(v =>
+      String(v.name || "").trim().toLowerCase() === name.toLowerCase()
+    );
+
+    let vendorId = Number(vendor?.id || 0);
+
+    if (!vendorId) {
+      const createResponse = await fetch("/api/home/contractors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({
+          name,
+          phone,
+          email: null,
+          website,
+          address1: null,
+          address2: null,
+          city: null,
+          state: null,
+          postalCode: null,
+          notes: null
+        })
+      });
+
+      if (!createResponse.ok) throw new Error(await readError(createResponse));
+      const created = await createResponse.json();
+      vendorId = Number(created.id || 0);
+
+      if (!vendorId)
+        throw new Error("Contractor was created but no contractor id was returned.");
+
+      await loadContractors(true);
+      vendor = contractorDirectory.find(v => Number(v.id) === vendorId) || null;
+    }
+
+    const detail = document.querySelector("#projectDetailBody")?._projectDetail;
+    const alreadyLinked = (detail?.contractors || []).find(c => Number(c.vendorId) === vendorId);
+
+    let projectContractorId = Number(alreadyLinked?.id || 0);
+
+    if (!projectContractorId) {
+      const associateResponse = await fetch(
+        `/api/home/projects/${quickBidderProjectId}/contractors`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({
+            vendorId,
+            status: "Contacted",
+            bidAmount: null,
+            notes: null,
+            isSelected: false
+          })
+        }
+      );
+
+      if (!associateResponse.ok) throw new Error(await readError(associateResponse));
+      const association = await associateResponse.json();
+      projectContractorId = Number(association.id || 0);
+    } else if (String(alreadyLinked.status || "").toLowerCase() === "considering") {
+      const updateResponse = await fetch(
+        `/api/home/projects/${quickBidderProjectId}/contractors/${projectContractorId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({
+            vendorId,
+            status: "Contacted",
+            bidAmount: alreadyLinked.bidAmount ?? null,
+            notes: alreadyLinked.notes || null,
+            isSelected: alreadyLinked.isSelected === true
+          })
+        }
+      );
+      if (!updateResponse.ok) throw new Error(await readError(updateResponse));
+    }
+
+    if (!projectContractorId)
+      throw new Error("Could not determine the project contractor record.");
+
+    if (person) {
+      const existingPerson = (vendor?.contacts || []).find(c =>
+        String(c.name || "").trim().toLowerCase() === person.toLowerCase()
+      );
+
+      if (!existingPerson) {
+        const contactResponse = await fetch(`/api/home/contractors/${vendorId}/contacts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({
+            name: person,
+            title: null,
+            phone: null,
+            email: null,
+            notes: null,
+            isPrimary: (vendor?.contacts || []).length === 0
+          })
+        });
+
+        if (!contactResponse.ok) throw new Error(await readError(contactResponse));
+      }
+    }
+
+    const activitySummary = person
+      ? `Called ${name} — spoke with ${person}`
+      : `Called ${name}`;
+
+    const activityResponse = await fetch(
+      `/api/home/projects/${quickBidderProjectId}/contractors/${projectContractorId}/activities`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({
+          activityType: "Called",
+          activityAt: contactedAt,
+          summary: activitySummary,
+          notes
+        })
+      }
+    );
+
+    if (!activityResponse.ok) throw new Error(await readError(activityResponse));
+
+    await moveProjectToGettingBids(quickBidderProjectId);
+
+    dialog.close();
+    await loadContractors(true);
+    await loadDashboard();
+    await loadProjectDetails(quickBidderProjectId);
+    showToast(`${name} added to the bid list.`);
+  } catch (err) {
+    console.error(err);
+    error.textContent = err.message || "Could not log this contractor call.";
+    error.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Add to bid list";
+  }
+}
+
+async function moveProjectToGettingBids(projectId) {
+  const project = state.data?.projects?.find(p => Number(p.id) === Number(projectId));
+  if (!project) return;
+
+  const current = String(project.status || "").trim().toLowerCase();
+  if (!["planned", "research"].includes(current)) return;
+
+  const response = await fetch(`/api/home/projects/${projectId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+    body: JSON.stringify({
+      propertyId: state.data.property.id,
+      parentProjectId: project.parentProjectId ?? null,
+      name: project.name,
+      status: "Getting Bids",
+      purpose: project.purpose || null,
+      estimatedCost: project.estimatedCost ?? null,
+      committedCost: project.committedCost ?? null,
+      contractorName: project.contractorName || null,
+      targetDate: project.targetDate || null,
+      notes: project.notes || null
+    })
+  });
+
+  if (!response.ok) throw new Error(await readError(response));
+}
+
 function ensureProjectContractorEditor() {
   let dialog = document.querySelector("#projectContractorDialog");
   if (dialog) return dialog;
@@ -1753,6 +2825,11 @@ function ensureProjectContractorEditor() {
 
 async function openProjectContractorEditor(contractor = null) {
   if (!activeProjectId) return;
+
+  if (!contractor) {
+    await openQuickBidderEditor();
+    return;
+  }
 
   await loadContractors();
   const dialog = ensureProjectContractorEditor();
@@ -2023,6 +3100,24 @@ async function uploadProjectDocument() {
 }
 
 async function handleProjectDetailClick(event) {
+  const followupButton = event.target.closest("[data-followup-project-contractor]");
+  if (followupButton) {
+    openProjectContractorFollowup(Number(followupButton.dataset.followupProjectContractor));
+    return;
+  }
+
+  const bidDetailButton = event.target.closest("[data-view-project-contractor-bid]");
+  if (bidDetailButton) {
+    openProjectContractorBidDetail(Number(bidDetailButton.dataset.viewProjectContractorBid));
+    return;
+  }
+
+  const activityDetailButton = event.target.closest("[data-view-project-contractor-activity]");
+  if (activityDetailButton) {
+    openProjectContractorActivityDetail(Number(activityDetailButton.dataset.viewProjectContractorActivity));
+    return;
+  }
+
   const openContractorButton = event.target.closest("[data-open-project-contractor]");
   if (openContractorButton) {
     openProjectContractorDetails(Number(openContractorButton.dataset.openProjectContractor));
