@@ -28,5 +28,7 @@ public class Vendor
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+    public ICollection<VendorContact> Contacts { get; set; } = new List<VendorContact>();
+
     public ICollection<Expense> Expenses { get; set; } = new List<Expense>();
 }

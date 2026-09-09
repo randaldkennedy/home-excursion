@@ -6,6 +6,8 @@ public class ProjectContractor
 
     public int ProjectId { get; set; }
 
+    public int? VendorId { get; set; }
+
     public string Name { get; set; } = string.Empty;
 
     public string Status { get; set; } = "Considering";
@@ -25,4 +27,10 @@ public class ProjectContractor
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     public HomeProject Project { get; set; } = null!;
+
+    public Vendor? Vendor { get; set; }
+
+    public ICollection<ProjectContractorActivity> Activities { get; set; } = new List<ProjectContractorActivity>();
+
+    public ICollection<ProjectContractorProposal> Proposals { get; set; } = new List<ProjectContractorProposal>();
 }

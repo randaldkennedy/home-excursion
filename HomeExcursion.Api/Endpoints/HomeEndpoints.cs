@@ -14,6 +14,13 @@ public static class HomeEndpoints
 
         group.MapGet("/dashboard", GetDashboardAsync);
 
+        group.MapGet("/contractors", GetContractorsAsync);
+        group.MapPost("/contractors", CreateContractorAsync);
+        group.MapPut("/contractors/{vendorId:int}", UpdateContractorAsync);
+        group.MapPost("/contractors/{vendorId:int}/contacts", CreateContractorContactAsync);
+        group.MapPut("/contractors/{vendorId:int}/contacts/{contactId:int}", UpdateContractorContactAsync);
+        group.MapDelete("/contractors/{vendorId:int}/contacts/{contactId:int}", DeleteContractorContactAsync);
+
         group.MapPost("/projects", CreateProjectAsync);
         group.MapPut("/projects/{id:int}", UpdateProjectAsync);
         group.MapGet("/projects/{id:int}/details", GetProjectDetailsAsync);
@@ -26,6 +33,14 @@ public static class HomeEndpoints
         group.MapDelete("/projects/{id:int}/contractors/{contractorId:int}", DeleteProjectContractorAsync);
         group.MapPost("/projects/{id:int}/contractors/{contractorId:int}/attachments", UploadProjectContractorAttachmentAsync)
             .DisableAntiforgery();
+        group.MapPost("/projects/{id:int}/contractors/{contractorId:int}/activities", CreateProjectContractorActivityAsync);
+        group.MapPost("/projects/{id:int}/contractors/{contractorId:int}/proposals", CreateProjectContractorProposalAsync);
+        group.MapPut("/projects/{id:int}/contractors/{contractorId:int}/proposals/{proposalId:int}", UpdateProjectContractorProposalAsync);
+        group.MapDelete("/projects/{id:int}/contractors/{contractorId:int}/proposals/{proposalId:int}", DeleteProjectContractorProposalAsync);
+
+        group.MapPost("/projects/{id:int}/closure-items", CreateProjectClosureItemAsync);
+        group.MapPut("/projects/{id:int}/closure-items/{itemId:int}", UpdateProjectClosureItemAsync);
+        group.MapDelete("/projects/{id:int}/closure-items/{itemId:int}", DeleteProjectClosureItemAsync);
 
         group.MapPurchaseEndpoints();
 
@@ -254,6 +269,275 @@ public static class HomeEndpoints
         });
     }
 
+    private sealed record SaveContractorRequest(
+        string Name,
+        string? Phone,
+        string? Email,
+        string? Website,
+        string? Address1,
+        string? Address2,
+        string? City,
+        string? State,
+        string? PostalCode,
+        string? Notes);
+
+    private static async Task<IResult> GetContractorsAsync(
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var contractors = await db.Vendors
+            .AsNoTracking()
+            .Where(v => v.IsActive)
+            .OrderBy(v => v.Name)
+            .Select(v => new
+            {
+                v.Id,
+                v.Name,
+                v.Phone,
+                v.Email,
+                v.Website,
+                v.Address1,
+                v.Address2,
+                v.City,
+                v.State,
+                v.PostalCode,
+                v.Notes,
+                Contacts = v.Contacts
+                    .OrderByDescending(c => c.IsPrimary)
+                    .ThenBy(c => c.Name)
+                    .Select(c => new
+                    {
+                        c.Id,
+                        c.Name,
+                        c.Title,
+                        c.Phone,
+                        c.Email,
+                        c.Notes,
+                        c.IsPrimary
+                    })
+                    .ToList()
+            })
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(contractors);
+    }
+
+    private static async Task<IResult> CreateContractorAsync(
+        SaveContractorRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var validation = ValidateContractorRequest(request);
+        if (validation is not null)
+            return validation;
+
+        var vendor = new Vendor
+        {
+            Name = request.Name.Trim(),
+            Phone = Clean(request.Phone),
+            Email = Clean(request.Email),
+            Website = Clean(request.Website),
+            Address1 = Clean(request.Address1),
+            Address2 = Clean(request.Address2),
+            City = Clean(request.City),
+            State = Clean(request.State),
+            PostalCode = Clean(request.PostalCode),
+            Notes = Clean(request.Notes),
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        db.Vendors.Add(vendor);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Created($"/api/home/contractors/{vendor.Id}", new { vendor.Id });
+    }
+
+    private static async Task<IResult> UpdateContractorAsync(
+        int vendorId,
+        SaveContractorRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var vendor = await db.Vendors
+            .FirstOrDefaultAsync(v => v.Id == vendorId && v.IsActive, cancellationToken);
+
+        if (vendor is null)
+            return Results.NotFound();
+
+        var validation = ValidateContractorRequest(request);
+        if (validation is not null)
+            return validation;
+
+        vendor.Name = request.Name.Trim();
+        vendor.Phone = Clean(request.Phone);
+        vendor.Email = Clean(request.Email);
+        vendor.Website = Clean(request.Website);
+        vendor.Address1 = Clean(request.Address1);
+        vendor.Address2 = Clean(request.Address2);
+        vendor.City = Clean(request.City);
+        vendor.State = Clean(request.State);
+        vendor.PostalCode = Clean(request.PostalCode);
+        vendor.Notes = Clean(request.Notes);
+
+        var linkedRows = await db.ProjectContractors
+            .Where(c => c.VendorId == vendorId)
+            .ToListAsync(cancellationToken);
+
+        foreach (var linked in linkedRows)
+        {
+            linked.Name = vendor.Name;
+            linked.Phone = vendor.Phone;
+            linked.UpdatedAt = DateTime.UtcNow;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(new { vendor.Id });
+    }
+
+    private static IResult? ValidateContractorRequest(SaveContractorRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+            return Results.BadRequest(new { message = "Contractor name is required." });
+
+        if (request.Name.Trim().Length > 200)
+            return Results.BadRequest(new { message = "Contractor name must be 200 characters or fewer." });
+
+        if (Clean(request.Phone)?.Length > 50)
+            return Results.BadRequest(new { message = "Phone number must be 50 characters or fewer." });
+
+        if (Clean(request.Email)?.Length > 254)
+            return Results.BadRequest(new { message = "Email must be 254 characters or fewer." });
+
+        if (Clean(request.Website)?.Length > 500)
+            return Results.BadRequest(new { message = "Website must be 500 characters or fewer." });
+
+        if (Clean(request.Address1)?.Length > 250 || Clean(request.Address2)?.Length > 250)
+            return Results.BadRequest(new { message = "Address lines must be 250 characters or fewer." });
+
+        if (Clean(request.City)?.Length > 100)
+            return Results.BadRequest(new { message = "City must be 100 characters or fewer." });
+
+        if (Clean(request.State)?.Length > 50)
+            return Results.BadRequest(new { message = "State must be 50 characters or fewer." });
+
+        if (Clean(request.PostalCode)?.Length > 20)
+            return Results.BadRequest(new { message = "Postal code must be 20 characters or fewer." });
+
+        if (Clean(request.Notes)?.Length > 4000)
+            return Results.BadRequest(new { message = "Contractor notes must be 4,000 characters or fewer." });
+
+        return null;
+    }
+
+    private static async Task<IResult> CreateContractorContactAsync(
+        int vendorId,
+        SaveVendorContactRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var vendorExists = await db.Vendors
+            .AnyAsync(v => v.Id == vendorId && v.IsActive, cancellationToken);
+
+        if (!vendorExists)
+            return Results.NotFound();
+
+        var validation = ValidateVendorContactRequest(request);
+        if (validation is not null)
+            return validation;
+
+        if (request.IsPrimary)
+        {
+            var existingPrimary = await db.VendorContacts
+                .Where(c => c.VendorId == vendorId && c.IsPrimary)
+                .ToListAsync(cancellationToken);
+
+            foreach (var existing in existingPrimary)
+            {
+                existing.IsPrimary = false;
+                existing.UpdatedAt = DateTime.UtcNow;
+            }
+        }
+
+        var contact = new VendorContact
+        {
+            VendorId = vendorId,
+            Name = request.Name.Trim(),
+            Title = Clean(request.Title),
+            Phone = Clean(request.Phone),
+            Email = Clean(request.Email),
+            Notes = Clean(request.Notes),
+            IsPrimary = request.IsPrimary,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+
+        db.VendorContacts.Add(contact);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Created($"/api/home/contractors/{vendorId}/contacts/{contact.Id}",
+            new { contact.Id });
+    }
+
+    private static async Task<IResult> UpdateContractorContactAsync(
+        int vendorId,
+        int contactId,
+        SaveVendorContactRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var contact = await db.VendorContacts
+            .FirstOrDefaultAsync(c => c.Id == contactId && c.VendorId == vendorId, cancellationToken);
+
+        if (contact is null)
+            return Results.NotFound();
+
+        var validation = ValidateVendorContactRequest(request);
+        if (validation is not null)
+            return validation;
+
+        if (request.IsPrimary)
+        {
+            var existingPrimary = await db.VendorContacts
+                .Where(c => c.VendorId == vendorId && c.Id != contactId && c.IsPrimary)
+                .ToListAsync(cancellationToken);
+
+            foreach (var existing in existingPrimary)
+            {
+                existing.IsPrimary = false;
+                existing.UpdatedAt = DateTime.UtcNow;
+            }
+        }
+
+        contact.Name = request.Name.Trim();
+        contact.Title = Clean(request.Title);
+        contact.Phone = Clean(request.Phone);
+        contact.Email = Clean(request.Email);
+        contact.Notes = Clean(request.Notes);
+        contact.IsPrimary = request.IsPrimary;
+        contact.UpdatedAt = DateTime.UtcNow;
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(new { contact.Id });
+    }
+
+    private static async Task<IResult> DeleteContractorContactAsync(
+        int vendorId,
+        int contactId,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var contact = await db.VendorContacts
+            .FirstOrDefaultAsync(c => c.Id == contactId && c.VendorId == vendorId, cancellationToken);
+
+        if (contact is null)
+            return Results.NotFound();
+
+        db.VendorContacts.Remove(contact);
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.NoContent();
+    }
+
     private sealed record SaveProjectRequest(
         int PropertyId,
         int? ParentProjectId,
@@ -447,6 +731,8 @@ public static class HomeEndpoints
             "Waiting" => "Waiting",
             "On Hold" => "On Hold",
             "Ordered" => "Ordered",
+            "Closing / Punch List" => "Closing / Punch List",
+            "Closed" => "Closed",
             "Complete" => "Complete",
             "Cancelled" => "Cancelled",
             _ => "Planned"
@@ -532,15 +818,107 @@ public static class HomeEndpoints
             {
                 c.Id,
                 c.ProjectId,
-                c.Name,
+                c.VendorId,
+                Name = c.Vendor != null ? c.Vendor.Name : c.Name,
+                Phone = c.Vendor != null ? c.Vendor.Phone : c.Phone,
+                Email = c.Vendor != null ? c.Vendor.Email : null,
+                Website = c.Vendor != null ? c.Vendor.Website : null,
+                Address1 = c.Vendor != null ? c.Vendor.Address1 : null,
+                Address2 = c.Vendor != null ? c.Vendor.Address2 : null,
+                City = c.Vendor != null ? c.Vendor.City : null,
+                State = c.Vendor != null ? c.Vendor.State : null,
+                PostalCode = c.Vendor != null ? c.Vendor.PostalCode : null,
+                VendorNotes = c.Vendor != null ? c.Vendor.Notes : null,
                 c.Status,
-                c.Phone,
                 c.BidAmount,
                 c.Notes,
                 c.IsSelected,
                 c.SortOrder,
                 c.CreatedAt,
                 c.UpdatedAt
+            })
+            .ToListAsync(cancellationToken);
+
+        var vendorIds = contractors
+            .Where(c => c.VendorId.HasValue)
+            .Select(c => c.VendorId!.Value)
+            .Distinct()
+            .ToList();
+
+        var contacts = await db.VendorContacts
+            .AsNoTracking()
+            .Where(c => vendorIds.Contains(c.VendorId))
+            .OrderByDescending(c => c.IsPrimary)
+            .ThenBy(c => c.Name)
+            .Select(c => new
+            {
+                c.Id,
+                c.VendorId,
+                c.Name,
+                c.Title,
+                c.Phone,
+                c.Email,
+                c.Notes,
+                c.IsPrimary
+            })
+            .ToListAsync(cancellationToken);
+
+        var projectContractorIds = contractors
+            .Select(c => c.Id)
+            .ToList();
+
+        var activities = await db.ProjectContractorActivities
+            .AsNoTracking()
+            .Where(a => projectContractorIds.Contains(a.ProjectContractorId))
+            .OrderByDescending(a => a.ActivityAt)
+            .ThenByDescending(a => a.Id)
+            .Select(a => new
+            {
+                a.Id,
+                a.ProjectContractorId,
+                a.ActivityType,
+                a.ActivityAt,
+                a.Summary,
+                a.Notes
+            })
+            .ToListAsync(cancellationToken);
+
+        var proposals = await db.ProjectContractorProposals
+            .AsNoTracking()
+            .Where(p => projectContractorIds.Contains(p.ProjectContractorId))
+            .OrderByDescending(p => p.IsCurrent)
+            .ThenByDescending(p => p.ReceivedDate)
+            .ThenByDescending(p => p.Id)
+            .Select(p => new
+            {
+                p.Id,
+                p.ProjectContractorId,
+                p.ReceivedDate,
+                p.RevisionLabel,
+                p.Amount,
+                p.Notes,
+                p.IsCurrent,
+                p.CreatedAt,
+                p.UpdatedAt
+            })
+            .ToListAsync(cancellationToken);
+
+        var closureItems = await db.ProjectClosureItems
+            .AsNoTracking()
+            .Where(i => i.ProjectId == id)
+            .OrderBy(i => i.SortOrder)
+            .ThenBy(i => i.Id)
+            .Select(i => new
+            {
+                i.Id,
+                i.ProjectId,
+                i.Description,
+                i.Status,
+                i.DueDate,
+                i.Notes,
+                i.SortOrder,
+                i.CreatedAt,
+                i.CompletedAt
             })
             .ToListAsync(cancellationToken);
 
@@ -580,6 +958,10 @@ public static class HomeEndpoints
             project,
             children,
             contractors,
+            contacts,
+            activities,
+            proposals,
+            closureItems,
             expenses,
             attachments,
             actualSpent,
@@ -745,9 +1127,8 @@ public static class HomeEndpoints
     }
 
     private sealed record SaveProjectContractorRequest(
-        string Name,
+        int VendorId,
         string? Status,
-        string? Phone,
         decimal? BidAmount,
         string? Notes,
         bool IsSelected);
@@ -767,6 +1148,18 @@ public static class HomeEndpoints
         var validation = ValidateProjectContractorRequest(request);
         if (validation is not null)
             return validation;
+
+        var vendor = await db.Vendors
+            .FirstOrDefaultAsync(v => v.Id == request.VendorId && v.IsActive, cancellationToken);
+
+        if (vendor is null)
+            return Results.BadRequest(new { message = "Contractor was not found." });
+
+        var alreadyLinked = await db.ProjectContractors
+            .AnyAsync(c => c.ProjectId == id && c.VendorId == request.VendorId, cancellationToken);
+
+        if (alreadyLinked)
+            return Results.Conflict(new { message = "That contractor is already associated with this project." });
 
         var nextSortOrder = await db.ProjectContractors
             .Where(c => c.ProjectId == id)
@@ -789,9 +1182,10 @@ public static class HomeEndpoints
         var contractor = new ProjectContractor
         {
             ProjectId = id,
-            Name = request.Name.Trim(),
+            VendorId = vendor.Id,
+            Name = vendor.Name,
+            Phone = vendor.Phone,
             Status = NormalizeProjectContractorStatus(request.Status),
-            Phone = Clean(request.Phone),
             BidAmount = request.BidAmount,
             Notes = Clean(request.Notes),
             IsSelected = request.IsSelected,
@@ -801,7 +1195,7 @@ public static class HomeEndpoints
         };
 
         if (contractor.IsSelected)
-            project.ContractorName = contractor.Name;
+            project.ContractorName = vendor.Name;
 
         db.ProjectContractors.Add(contractor);
         await db.SaveChangesAsync(cancellationToken);
@@ -820,6 +1214,7 @@ public static class HomeEndpoints
     {
         var contractor = await db.ProjectContractors
             .Include(c => c.Project)
+            .Include(c => c.Vendor)
             .FirstOrDefaultAsync(
                 c => c.Id == contractorId && c.ProjectId == id,
                 cancellationToken);
@@ -830,6 +1225,14 @@ public static class HomeEndpoints
         var validation = ValidateProjectContractorRequest(request);
         if (validation is not null)
             return validation;
+
+        if (contractor.VendorId != request.VendorId)
+        {
+            return Results.BadRequest(new
+            {
+                message = "A project-contractor record cannot be switched to a different contractor. Remove it and associate the other contractor instead."
+            });
+        }
 
         var wasSelected = contractor.IsSelected;
 
@@ -846,26 +1249,16 @@ public static class HomeEndpoints
             }
         }
 
-        contractor.Name = request.Name.Trim();
         contractor.Status = NormalizeProjectContractorStatus(request.Status);
-        contractor.Phone = Clean(request.Phone);
         contractor.BidAmount = request.BidAmount;
         contractor.Notes = Clean(request.Notes);
         contractor.IsSelected = request.IsSelected;
         contractor.UpdatedAt = DateTime.UtcNow;
 
         if (contractor.IsSelected)
-        {
-            contractor.Project.ContractorName = contractor.Name;
-        }
-        else if (wasSelected &&
-                 string.Equals(
-                     contractor.Project.ContractorName,
-                     contractor.Name,
-                     StringComparison.OrdinalIgnoreCase))
-        {
+            contractor.Project.ContractorName = contractor.Vendor?.Name ?? contractor.Name;
+        else if (wasSelected)
             contractor.Project.ContractorName = null;
-        }
 
         await db.SaveChangesAsync(cancellationToken);
         return Results.Ok(new { contractor.Id });
@@ -923,20 +1316,14 @@ public static class HomeEndpoints
     private static IResult? ValidateProjectContractorRequest(
         SaveProjectContractorRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.Name))
-            return Results.BadRequest(new { message = "Contractor name is required." });
-
-        if (request.Name.Trim().Length > 200)
-            return Results.BadRequest(new { message = "Contractor name must be 200 characters or fewer." });
-
-        if (Clean(request.Phone)?.Length > 50)
-            return Results.BadRequest(new { message = "Phone number must be 50 characters or fewer." });
+        if (request.VendorId <= 0)
+            return Results.BadRequest(new { message = "Choose a contractor." });
 
         if (request.BidAmount < 0)
             return Results.BadRequest(new { message = "Bid amount cannot be negative." });
 
         if (Clean(request.Notes)?.Length > 2000)
-            return Results.BadRequest(new { message = "Contractor notes must be 2,000 characters or fewer." });
+            return Results.BadRequest(new { message = "Project-contractor notes must be 2,000 characters or fewer." });
 
         return null;
     }
@@ -945,6 +1332,8 @@ public static class HomeEndpoints
         value?.Trim() switch
         {
             "Contacted" => "Contacted",
+            "Callback Pending" => "Callback Pending",
+            "Appointment Scheduled" => "Appointment Scheduled",
             "Walkthrough Scheduled" => "Walkthrough Scheduled",
             "Awaiting Bid" => "Awaiting Bid",
             "Bid Received" => "Bid Received",
@@ -954,6 +1343,402 @@ public static class HomeEndpoints
             "Declined" => "Declined",
             "No Response" => "No Response",
             _ => "Considering"
+        };
+
+    private sealed record SaveVendorContactRequest(
+        string Name,
+        string? Title,
+        string? Phone,
+        string? Email,
+        string? Notes,
+        bool IsPrimary);
+
+    private sealed record SaveProjectContractorActivityRequest(
+        string? ActivityType,
+        DateTime? ActivityAt,
+        string Summary,
+        string? Notes);
+
+    private static IResult? ValidateVendorContactRequest(SaveVendorContactRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+            return Results.BadRequest(new { message = "Contact name is required." });
+
+        if (request.Name.Trim().Length > 200)
+            return Results.BadRequest(new { message = "Contact name must be 200 characters or fewer." });
+
+        if (Clean(request.Title)?.Length > 120)
+            return Results.BadRequest(new { message = "Contact title must be 120 characters or fewer." });
+
+        if (Clean(request.Phone)?.Length > 50)
+            return Results.BadRequest(new { message = "Contact phone must be 50 characters or fewer." });
+
+        if (Clean(request.Email)?.Length > 254)
+            return Results.BadRequest(new { message = "Contact email must be 254 characters or fewer." });
+
+        if (Clean(request.Notes)?.Length > 2000)
+            return Results.BadRequest(new { message = "Contact notes must be 2,000 characters or fewer." });
+
+        return null;
+    }
+
+    private static async Task<IResult> CreateProjectContractorActivityAsync(
+        int id,
+        int contractorId,
+        SaveProjectContractorActivityRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var contractorExists = await db.ProjectContractors
+            .AnyAsync(c => c.Id == contractorId && c.ProjectId == id, cancellationToken);
+
+        if (!contractorExists)
+            return Results.NotFound();
+
+        if (string.IsNullOrWhiteSpace(request.Summary))
+            return Results.BadRequest(new { message = "Activity summary is required." });
+
+        if (request.Summary.Trim().Length > 300)
+            return Results.BadRequest(new { message = "Activity summary must be 300 characters or fewer." });
+
+        if (Clean(request.Notes)?.Length > 4000)
+            return Results.BadRequest(new { message = "Activity notes must be 4,000 characters or fewer." });
+
+        var activity = new ProjectContractorActivity
+        {
+            ProjectContractorId = contractorId,
+            ActivityType = NormalizeProjectContractorActivityType(request.ActivityType),
+            ActivityAt = request.ActivityAt ?? DateTime.UtcNow,
+            Summary = request.Summary.Trim(),
+            Notes = Clean(request.Notes),
+            CreatedAt = DateTime.UtcNow
+        };
+
+        db.ProjectContractorActivities.Add(activity);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Created(
+            $"/api/home/projects/{id}/contractors/{contractorId}/activities/{activity.Id}",
+            new { activity.Id });
+    }
+
+    private static string NormalizeProjectContractorActivityType(string? value) =>
+        value?.Trim() switch
+        {
+            "Called" => "Called",
+            "Email" => "Email",
+            "Text" => "Text",
+            "Meeting" => "Meeting",
+            "Walkthrough" => "Walkthrough",
+            "Estimate" => "Estimate",
+            _ => "Note"
+        };
+
+    private sealed record SaveProjectContractorProposalRequest(
+        DateOnly ReceivedDate,
+        string? RevisionLabel,
+        decimal? Amount,
+        string? Notes,
+        bool IsCurrent);
+
+    private static async Task<IResult> CreateProjectContractorProposalAsync(
+        int id,
+        int contractorId,
+        SaveProjectContractorProposalRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var contractor = await db.ProjectContractors
+            .FirstOrDefaultAsync(c => c.Id == contractorId && c.ProjectId == id, cancellationToken);
+
+        if (contractor is null)
+            return Results.NotFound();
+
+        var validation = ValidateProjectContractorProposalRequest(request);
+        if (validation is not null)
+            return validation;
+
+        if (request.IsCurrent)
+        {
+            var currentRows = await db.ProjectContractorProposals
+                .Where(p => p.ProjectContractorId == contractorId && p.IsCurrent)
+                .ToListAsync(cancellationToken);
+
+            foreach (var current in currentRows)
+            {
+                current.IsCurrent = false;
+                current.UpdatedAt = DateTime.UtcNow;
+            }
+        }
+
+        var proposal = new ProjectContractorProposal
+        {
+            ProjectContractorId = contractorId,
+            ReceivedDate = request.ReceivedDate,
+            RevisionLabel = Clean(request.RevisionLabel),
+            Amount = request.Amount,
+            Notes = Clean(request.Notes),
+            IsCurrent = request.IsCurrent,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+
+        db.ProjectContractorProposals.Add(proposal);
+
+        if (proposal.IsCurrent)
+            contractor.BidAmount = proposal.Amount;
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Created(
+            $"/api/home/projects/{id}/contractors/{contractorId}/proposals/{proposal.Id}",
+            new { proposal.Id });
+    }
+
+    private static async Task<IResult> UpdateProjectContractorProposalAsync(
+        int id,
+        int contractorId,
+        int proposalId,
+        SaveProjectContractorProposalRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var proposal = await db.ProjectContractorProposals
+            .Include(p => p.ProjectContractor)
+            .FirstOrDefaultAsync(
+                p => p.Id == proposalId &&
+                     p.ProjectContractorId == contractorId &&
+                     p.ProjectContractor.ProjectId == id,
+                cancellationToken);
+
+        if (proposal is null)
+            return Results.NotFound();
+
+        var validation = ValidateProjectContractorProposalRequest(request);
+        if (validation is not null)
+            return validation;
+
+        if (request.IsCurrent)
+        {
+            var currentRows = await db.ProjectContractorProposals
+                .Where(p => p.ProjectContractorId == contractorId &&
+                            p.Id != proposalId &&
+                            p.IsCurrent)
+                .ToListAsync(cancellationToken);
+
+            foreach (var current in currentRows)
+            {
+                current.IsCurrent = false;
+                current.UpdatedAt = DateTime.UtcNow;
+            }
+        }
+
+        proposal.ReceivedDate = request.ReceivedDate;
+        proposal.RevisionLabel = Clean(request.RevisionLabel);
+        proposal.Amount = request.Amount;
+        proposal.Notes = Clean(request.Notes);
+        proposal.IsCurrent = request.IsCurrent;
+        proposal.UpdatedAt = DateTime.UtcNow;
+
+        if (proposal.IsCurrent)
+            proposal.ProjectContractor.BidAmount = proposal.Amount;
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(new { proposal.Id });
+    }
+
+    private static async Task<IResult> DeleteProjectContractorProposalAsync(
+        int id,
+        int contractorId,
+        int proposalId,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var proposal = await db.ProjectContractorProposals
+            .Include(p => p.ProjectContractor)
+            .FirstOrDefaultAsync(
+                p => p.Id == proposalId &&
+                     p.ProjectContractorId == contractorId &&
+                     p.ProjectContractor.ProjectId == id,
+                cancellationToken);
+
+        if (proposal is null)
+            return Results.NotFound();
+
+        var wasCurrent = proposal.IsCurrent;
+        db.ProjectContractorProposals.Remove(proposal);
+        await db.SaveChangesAsync(cancellationToken);
+
+        if (wasCurrent)
+        {
+            var replacement = await db.ProjectContractorProposals
+                .Where(p => p.ProjectContractorId == contractorId)
+                .OrderByDescending(p => p.ReceivedDate)
+                .ThenByDescending(p => p.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            var contractor = await db.ProjectContractors
+                .FirstAsync(c => c.Id == contractorId, cancellationToken);
+
+            if (replacement is not null)
+            {
+                replacement.IsCurrent = true;
+                replacement.UpdatedAt = DateTime.UtcNow;
+                contractor.BidAmount = replacement.Amount;
+            }
+            else
+            {
+                contractor.BidAmount = null;
+            }
+
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        return Results.NoContent();
+    }
+
+    private static IResult? ValidateProjectContractorProposalRequest(
+        SaveProjectContractorProposalRequest request)
+    {
+        if (request.Amount < 0)
+            return Results.BadRequest(new { message = "Proposal amount cannot be negative." });
+
+        if (Clean(request.RevisionLabel)?.Length > 100)
+            return Results.BadRequest(new { message = "Revision label must be 100 characters or fewer." });
+
+        if (Clean(request.Notes)?.Length > 4000)
+            return Results.BadRequest(new { message = "Proposal notes must be 4,000 characters or fewer." });
+
+        return null;
+    }
+
+    private sealed record SaveProjectClosureItemRequest(
+        string Description,
+        string? Status,
+        DateOnly? DueDate,
+        string? Notes,
+        int? SortOrder);
+
+    private static async Task<IResult> CreateProjectClosureItemAsync(
+        int id,
+        SaveProjectClosureItemRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var projectExists = await db.Projects
+            .AnyAsync(p => p.Id == id, cancellationToken);
+
+        if (!projectExists)
+            return Results.NotFound();
+
+        var validation = ValidateProjectClosureItemRequest(request);
+        if (validation is not null)
+            return validation;
+
+        var nextSortOrder = request.SortOrder ??
+            ((await db.ProjectClosureItems
+                .Where(i => i.ProjectId == id)
+                .Select(i => (int?)i.SortOrder)
+                .MaxAsync(cancellationToken)) ?? 0) + 10;
+
+        var status = NormalizeProjectClosureItemStatus(request.Status);
+
+        var item = new ProjectClosureItem
+        {
+            ProjectId = id,
+            Description = request.Description.Trim(),
+            Status = status,
+            DueDate = request.DueDate,
+            Notes = Clean(request.Notes),
+            SortOrder = nextSortOrder,
+            CreatedAt = DateTime.UtcNow,
+            CompletedAt = status == "Complete" ? DateTime.UtcNow : null
+        };
+
+        db.ProjectClosureItems.Add(item);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Created(
+            $"/api/home/projects/{id}/closure-items/{item.Id}",
+            new { item.Id });
+    }
+
+    private static async Task<IResult> UpdateProjectClosureItemAsync(
+        int id,
+        int itemId,
+        SaveProjectClosureItemRequest request,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var item = await db.ProjectClosureItems
+            .FirstOrDefaultAsync(i => i.Id == itemId && i.ProjectId == id, cancellationToken);
+
+        if (item is null)
+            return Results.NotFound();
+
+        var validation = ValidateProjectClosureItemRequest(request);
+        if (validation is not null)
+            return validation;
+
+        var oldStatus = item.Status;
+        var newStatus = NormalizeProjectClosureItemStatus(request.Status);
+
+        item.Description = request.Description.Trim();
+        item.Status = newStatus;
+        item.DueDate = request.DueDate;
+        item.Notes = Clean(request.Notes);
+        if (request.SortOrder.HasValue)
+            item.SortOrder = request.SortOrder.Value;
+
+        if (oldStatus != "Complete" && newStatus == "Complete")
+            item.CompletedAt = DateTime.UtcNow;
+        else if (oldStatus == "Complete" && newStatus != "Complete")
+            item.CompletedAt = null;
+
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(new { item.Id });
+    }
+
+    private static async Task<IResult> DeleteProjectClosureItemAsync(
+        int id,
+        int itemId,
+        HomeExcursionDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var item = await db.ProjectClosureItems
+            .FirstOrDefaultAsync(i => i.Id == itemId && i.ProjectId == id, cancellationToken);
+
+        if (item is null)
+            return Results.NotFound();
+
+        db.ProjectClosureItems.Remove(item);
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.NoContent();
+    }
+
+    private static IResult? ValidateProjectClosureItemRequest(
+        SaveProjectClosureItemRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Description))
+            return Results.BadRequest(new { message = "Closure item description is required." });
+
+        if (request.Description.Trim().Length > 300)
+            return Results.BadRequest(new { message = "Closure item description must be 300 characters or fewer." });
+
+        if (Clean(request.Notes)?.Length > 4000)
+            return Results.BadRequest(new { message = "Closure item notes must be 4,000 characters or fewer." });
+
+        return null;
+    }
+
+    private static string NormalizeProjectClosureItemStatus(string? value) =>
+        value?.Trim() switch
+        {
+            "In Progress" => "In Progress",
+            "Waiting" => "Waiting",
+            "Complete" => "Complete",
+            "Cancelled" => "Cancelled",
+            _ => "Planned"
         };
 
     private static async Task<IResult> UploadProjectContractorAttachmentAsync(

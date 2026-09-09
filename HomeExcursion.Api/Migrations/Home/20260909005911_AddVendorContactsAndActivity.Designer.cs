@@ -4,6 +4,7 @@ using HomeExcursion.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace HomeExcursion.Api.Migrations.Home
 {
     [DbContext(typeof(HomeExcursionDbContext))]
-    partial class HomeExcursionDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260909005911_AddVendorContactsAndActivity")]
+    partial class AddVendorContactsAndActivity
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -243,50 +246,6 @@ namespace HomeExcursion.Api.Migrations.Home
                     b.ToTable("Tasks", "home");
                 });
 
-            modelBuilder.Entity("HomeExcursion.Api.Models.ProjectClosureItem", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Description")
-                        .IsRequired()
-                        .HasMaxLength(300)
-                        .HasColumnType("nvarchar(300)");
-
-                    b.Property<DateOnly?>("DueDate")
-                        .HasColumnType("date");
-
-                    b.Property<string>("Notes")
-                        .HasMaxLength(4000)
-                        .HasColumnType("nvarchar(4000)");
-
-                    b.Property<int>("ProjectId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("SortOrder")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("nvarchar(40)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ProjectId", "Status", "SortOrder");
-
-                    b.ToTable("ProjectClosureItems", "home");
-                });
-
             modelBuilder.Entity("HomeExcursion.Api.Models.ProjectContractor", b =>
                 {
                     b.Property<int>("Id")
@@ -344,88 +303,6 @@ namespace HomeExcursion.Api.Migrations.Home
                     b.HasIndex("ProjectId", "SortOrder");
 
                     b.ToTable("ProjectContractors", "home");
-                });
-
-            modelBuilder.Entity("HomeExcursion.Api.Models.ProjectContractorActivity", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("ActivityAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("ActivityType")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("nvarchar(40)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Notes")
-                        .HasMaxLength(4000)
-                        .HasColumnType("nvarchar(4000)");
-
-                    b.Property<int>("ProjectContractorId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Summary")
-                        .IsRequired()
-                        .HasMaxLength(300)
-                        .HasColumnType("nvarchar(300)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ProjectContractorId", "ActivityAt");
-
-                    b.ToTable("ProjectContractorActivities", "home");
-                });
-
-            modelBuilder.Entity("HomeExcursion.Api.Models.ProjectContractorProposal", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<decimal?>("Amount")
-                        .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<bool>("IsCurrent")
-                        .HasColumnType("bit");
-
-                    b.Property<string>("Notes")
-                        .HasMaxLength(4000)
-                        .HasColumnType("nvarchar(4000)");
-
-                    b.Property<int>("ProjectContractorId")
-                        .HasColumnType("int");
-
-                    b.Property<DateOnly>("ReceivedDate")
-                        .HasColumnType("date");
-
-                    b.Property<string>("RevisionLabel")
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ProjectContractorId", "IsCurrent");
-
-                    b.HasIndex("ProjectContractorId", "ReceivedDate");
-
-                    b.ToTable("ProjectContractorProposals", "home");
                 });
 
             modelBuilder.Entity("HomeExcursion.Api.Models.Property", b =>
@@ -786,6 +663,49 @@ namespace HomeExcursion.Api.Migrations.Home
                     b.ToTable("Vendors", "home");
                 });
 
+            modelBuilder.Entity("HomeExcursion.Api.Models.VendorActivity", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("ActivityAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ActivityType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<int?>("ProjectId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int>("VendorId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("VendorId", "ActivityAt");
+
+                    b.ToTable("VendorActivities", "home");
+                });
+
             modelBuilder.Entity("HomeExcursion.Api.Models.VendorContact", b =>
                 {
                     b.Property<int>("Id")
@@ -902,17 +822,6 @@ namespace HomeExcursion.Api.Migrations.Home
                     b.Navigation("Property");
                 });
 
-            modelBuilder.Entity("HomeExcursion.Api.Models.ProjectClosureItem", b =>
-                {
-                    b.HasOne("HomeExcursion.Api.Models.HomeProject", "Project")
-                        .WithMany()
-                        .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Project");
-                });
-
             modelBuilder.Entity("HomeExcursion.Api.Models.ProjectContractor", b =>
                 {
                     b.HasOne("HomeExcursion.Api.Models.HomeProject", "Project")
@@ -929,28 +838,6 @@ namespace HomeExcursion.Api.Migrations.Home
                     b.Navigation("Project");
 
                     b.Navigation("Vendor");
-                });
-
-            modelBuilder.Entity("HomeExcursion.Api.Models.ProjectContractorActivity", b =>
-                {
-                    b.HasOne("HomeExcursion.Api.Models.ProjectContractor", "ProjectContractor")
-                        .WithMany("Activities")
-                        .HasForeignKey("ProjectContractorId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("ProjectContractor");
-                });
-
-            modelBuilder.Entity("HomeExcursion.Api.Models.ProjectContractorProposal", b =>
-                {
-                    b.HasOne("HomeExcursion.Api.Models.ProjectContractor", "ProjectContractor")
-                        .WithMany("Proposals")
-                        .HasForeignKey("ProjectContractorId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("ProjectContractor");
                 });
 
             modelBuilder.Entity("HomeExcursion.Api.Models.Purchase", b =>
@@ -1033,6 +920,24 @@ namespace HomeExcursion.Api.Migrations.Home
                     b.Navigation("Task");
                 });
 
+            modelBuilder.Entity("HomeExcursion.Api.Models.VendorActivity", b =>
+                {
+                    b.HasOne("HomeExcursion.Api.Models.HomeProject", "Project")
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("HomeExcursion.Api.Models.Vendor", "Vendor")
+                        .WithMany("Activities")
+                        .HasForeignKey("VendorId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Project");
+
+                    b.Navigation("Vendor");
+                });
+
             modelBuilder.Entity("HomeExcursion.Api.Models.VendorContact", b =>
                 {
                     b.HasOne("HomeExcursion.Api.Models.Vendor", "Vendor")
@@ -1067,13 +972,6 @@ namespace HomeExcursion.Api.Migrations.Home
                     b.Navigation("TaskAreas");
                 });
 
-            modelBuilder.Entity("HomeExcursion.Api.Models.ProjectContractor", b =>
-                {
-                    b.Navigation("Activities");
-
-                    b.Navigation("Proposals");
-                });
-
             modelBuilder.Entity("HomeExcursion.Api.Models.Property", b =>
                 {
                     b.Navigation("Expenses");
@@ -1097,6 +995,8 @@ namespace HomeExcursion.Api.Migrations.Home
 
             modelBuilder.Entity("HomeExcursion.Api.Models.Vendor", b =>
                 {
+                    b.Navigation("Activities");
+
                     b.Navigation("Contacts");
 
                     b.Navigation("Expenses");

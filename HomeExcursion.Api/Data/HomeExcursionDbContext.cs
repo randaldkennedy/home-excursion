@@ -17,6 +17,10 @@ public class HomeExcursionDbContext : DbContext
     public DbSet<HomeTask> Tasks => Set<HomeTask>();
     public DbSet<Expense> Expenses => Set<Expense>();
     public DbSet<Vendor> Vendors => Set<Vendor>();
+    public DbSet<VendorContact> VendorContacts => Set<VendorContact>();
+    public DbSet<ProjectContractorActivity> ProjectContractorActivities => Set<ProjectContractorActivity>();
+    public DbSet<ProjectContractorProposal> ProjectContractorProposals => Set<ProjectContractorProposal>();
+    public DbSet<ProjectClosureItem> ProjectClosureItems => Set<ProjectClosureItem>();
     public DbSet<Area> Areas => Set<Area>();
     public DbSet<TaskArea> TaskAreas => Set<TaskArea>();
     public DbSet<Purchase> Purchases => Set<Purchase>();
@@ -113,8 +117,14 @@ public class HomeExcursionDbContext : DbContext
                 .HasForeignKey(c => c.ProjectId)
                 .OnDelete(DeleteBehavior.Cascade);
 
+            entity.HasOne(c => c.Vendor)
+                .WithMany()
+                .HasForeignKey(c => c.VendorId)
+                .OnDelete(DeleteBehavior.SetNull);
+
             entity.HasIndex(c => new { c.ProjectId, c.SortOrder });
             entity.HasIndex(c => new { c.ProjectId, c.IsSelected });
+            entity.HasIndex(c => c.VendorId);
         });
 
 
@@ -224,6 +234,96 @@ public class HomeExcursionDbContext : DbContext
 
             entity.HasIndex(v => v.Name);
         });
+
+        modelBuilder.Entity<VendorContact>(entity =>
+        {
+            entity.ToTable("VendorContacts");
+
+            entity.Property(c => c.Name).HasMaxLength(200).IsRequired();
+            entity.Property(c => c.Title).HasMaxLength(120);
+            entity.Property(c => c.Phone).HasMaxLength(50);
+            entity.Property(c => c.Email).HasMaxLength(254);
+            entity.Property(c => c.Notes).HasMaxLength(2000);
+
+            entity.HasOne(c => c.Vendor)
+                .WithMany(v => v.Contacts)
+                .HasForeignKey(c => c.VendorId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(c => new { c.VendorId, c.IsPrimary });
+        });
+
+
+        modelBuilder.Entity<ProjectContractorActivity>(entity =>
+        {
+            entity.ToTable("ProjectContractorActivities");
+
+            entity.Property(a => a.ActivityType)
+                .HasMaxLength(40)
+                .IsRequired();
+
+            entity.Property(a => a.Summary)
+                .HasMaxLength(300)
+                .IsRequired();
+
+            entity.Property(a => a.Notes)
+                .HasMaxLength(4000);
+
+            entity.HasOne(a => a.ProjectContractor)
+                .WithMany(c => c.Activities)
+                .HasForeignKey(a => a.ProjectContractorId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(a => new { a.ProjectContractorId, a.ActivityAt });
+        });
+
+
+        modelBuilder.Entity<ProjectContractorProposal>(entity =>
+        {
+            entity.ToTable("ProjectContractorProposals");
+
+            entity.Property(p => p.RevisionLabel)
+                .HasMaxLength(100);
+
+            entity.Property(p => p.Amount)
+                .HasPrecision(12, 2);
+
+            entity.Property(p => p.Notes)
+                .HasMaxLength(4000);
+
+            entity.HasOne(p => p.ProjectContractor)
+                .WithMany(c => c.Proposals)
+                .HasForeignKey(p => p.ProjectContractorId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(p => new { p.ProjectContractorId, p.IsCurrent });
+            entity.HasIndex(p => new { p.ProjectContractorId, p.ReceivedDate });
+        });
+
+
+        modelBuilder.Entity<ProjectClosureItem>(entity =>
+        {
+            entity.ToTable("ProjectClosureItems");
+
+            entity.Property(i => i.Description)
+                .HasMaxLength(300)
+                .IsRequired();
+
+            entity.Property(i => i.Status)
+                .HasMaxLength(40)
+                .IsRequired();
+
+            entity.Property(i => i.Notes)
+                .HasMaxLength(4000);
+
+            entity.HasOne(i => i.Project)
+                .WithMany()
+                .HasForeignKey(i => i.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(i => new { i.ProjectId, i.Status, i.SortOrder });
+        });
+
 
         modelBuilder.Entity<Purchase>(entity =>
         {
