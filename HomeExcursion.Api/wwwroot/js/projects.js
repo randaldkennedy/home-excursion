@@ -938,11 +938,17 @@ function renderProjectContractorDetails() {
     a => Number(a.projectContractorId) === Number(contractor.id)
   );
 
+  const contractorProposals = (detail.proposals || []).filter(
+    p => Number(p.projectContractorId) === Number(contractor.id)
+  );
+  const visibleActivityCount =
+    projectContractorActivityRows(contractor, activities, contractorProposals).length;
+
   const tabDefs = [
-    ["activity", `Activity (${activities.length})`],
+    ["activity", `Activity (${visibleActivityCount})`],
     ["overview", "Overview"],
     ["contacts", `Contacts (${contacts.length})`],
-    ["proposals", `Bids (${(detail.proposals || []).filter(p => Number(p.projectContractorId) === Number(contractor.id)).length})`],
+    ["proposals", `Bids (${projectContractorBidCount(contractor, contractorProposals)})`],
     ["files", `Files (${contractorFiles.length})`],
     ["notes", "Notes"]
   ];
@@ -986,13 +992,81 @@ function renderProjectContractorDetails() {
     return;
   }
 
-  body.innerHTML = renderProjectContractorOverviewTab(contractor, contacts, activities, contractorFiles);
+  body.innerHTML = renderProjectContractorOverviewTab(
+    contractor,
+    contacts,
+    activities,
+    contractorFiles,
+    contractorProposals
+  );
 }
 
-function renderProjectContractorOverviewTab(contractor, contacts, activities, files) {
+
+function isMirroredBidActivity(activity) {
+  return String(activity?.activityType || "").toLowerCase() === "estimate" &&
+    /^proposal received\s*-/i.test(String(activity?.summary || ""));
+}
+
+function projectContractorActivityRows(contractor, activities, proposals) {
+  const regularActivities = [...(activities || [])]
+    .filter(a => !isMirroredBidActivity(a))
+    .map(activity => ({
+      kind: "activity",
+      id: activity.id,
+      activityAt: activity.activityAt,
+      type: String(activity.activityType || "").toLowerCase() === "estimate"
+        ? "Bid / Quote"
+        : (activity.activityType || "Note"),
+      summary: activity.summary || "Activity"
+    }));
+
+  const bidActivities = (proposals || []).map(proposal => ({
+    kind: "bid",
+    id: proposal.id,
+    activityAt: `${proposal.receivedDate}T12:00:00`,
+    type: "Bid",
+    summary: [
+      "Bid received",
+      proposal.amount != null ? money.format(Number(proposal.amount)) : null,
+      proposal.revisionLabel || null
+    ].filter(Boolean).join(" · ")
+  }));
+
+  return [...regularActivities, ...bidActivities]
+    .sort((a, b) => new Date(b.activityAt || 0) - new Date(a.activityAt || 0));
+}
+
+function projectContractorBidCount(contractor, proposals) {
+  const count = (proposals || []).length;
+  if (count) return count;
+
+  // Legacy/current quote amount existed before structured Bid records.
+  // Treat it as one quote so Overview and the Bids tab do not contradict each other.
+  return contractor?.bidAmount != null ? 1 : 0;
+}
+
+function latestManualQuoteActivity(activities) {
+  return [...(activities || [])]
+    .filter(a =>
+      String(a.activityType || "").toLowerCase() === "estimate" &&
+      !isMirroredBidActivity(a))
+    .sort((a, b) => new Date(b.activityAt || 0) - new Date(a.activityAt || 0))[0] || null;
+}
+
+function renderProjectContractorOverviewTab(contractor, contacts, activities, files, proposals = []) {
   const primaryContact = contacts.find(c => c.isPrimary) || contacts[0] || null;
-  const lastActivity = activities[0] || null;
-  const bid = contractor.bidAmount != null ? money.format(Number(contractor.bidAmount)) : "No bid yet";
+  const visibleActivities = activities.filter(a => !isMirroredBidActivity(a));
+  const lastActivity = visibleActivities[0] || null;
+  const currentStructuredBid =
+    proposals.find(p => p.isCurrent) ||
+    [...proposals].sort((a, b) => Number(b.id) - Number(a.id))[0] ||
+    null;
+  const bid = currentStructuredBid?.amount != null
+    ? money.format(Number(currentStructuredBid.amount))
+    : (contractor.bidAmount != null ? money.format(Number(contractor.bidAmount)) : "No bid yet");
+  const bidLabel = currentStructuredBid
+    ? "Bid"
+    : (contractor.bidAmount != null ? "Quoted price" : "Bid");
   const address = [
     contractor.address1,
     contractor.address2,
@@ -1002,7 +1076,7 @@ function renderProjectContractorOverviewTab(contractor, contacts, activities, fi
   return `
     <div class="project-detail-summary" style="margin-bottom:18px">
       <div class="project-detail-stat"><span>Status</span><strong>${escapeHtml(contractor.status)}</strong></div>
-      <div class="project-detail-stat"><span>Bid</span><strong>${escapeHtml(bid)}</strong></div>
+      <div class="project-detail-stat"><span>${escapeHtml(bidLabel)}</span><strong>${escapeHtml(bid)}</strong></div>
       <div class="project-detail-stat"><span>Files</span><strong>${files.length}</strong></div>
     </div>
 
@@ -1086,11 +1160,18 @@ function renderProjectContractorProposalsTab(contractor, proposals, attachments)
     Number(b.id) - Number(a.id)
   );
 
+  const detail = document.querySelector("#projectDetailBody")?._projectDetail || {};
+  const contractorActivities = (detail.activities || []).filter(
+    a => Number(a.projectContractorId) === Number(contractor.id)
+  );
+  const quotedActivity = latestManualQuoteActivity(contractorActivities);
+  const hasLegacyQuote = !sorted.length && contractor.bidAmount != null;
+
   return `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
       <div>
         <h3 style="margin:0">Bid history</h3>
-        <div class="expense-meta">Old bids stay here. One bid is the current working bid.</div>
+        <div class="expense-meta">Written bids and phone/verbal quotes stay here.</div>
       </div>
       <button type="button" class="primary-button" data-add-project-contractor-proposal="${contractor.id}">+ Add bid</button>
     </div>
@@ -1131,7 +1212,28 @@ function renderProjectContractorProposalsTab(contractor, proposals, attachments)
             </div>
           </article>`;
       }).join("")}
-    </div>` : `<div class="empty">No bids received yet.</div>`}
+    </div>` : hasLegacyQuote ? `
+      <article class="bid-history-card">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <strong>${money.format(Number(contractor.bidAmount))}</strong>
+            <span class="badge">Phone / verbal quote</span>
+          </div>
+          ${quotedActivity?.activityAt
+            ? `<div class="expense-meta">Received ${escapeHtml(formatProjectActivityWhen(quotedActivity.activityAt))}</div>`
+            : ""}
+          ${quotedActivity?.summary
+            ? `<p class="project-notes"><strong>${escapeHtml(quotedActivity.summary)}</strong></p>`
+            : ""}
+          ${quotedActivity?.notes
+            ? `<p class="project-notes">${escapeHtml(quotedActivity.notes)}</p>`
+            : ""}
+        </div>
+        <div class="bid-history-files">
+          <span class="expense-meta">No file attached</span>
+        </div>
+      </article>
+    ` : `<div class="empty">No bids or quotes received yet.</div>`}
   `;
 }
 function renderProjectContractorActivityTab(contractor, activities) {
@@ -1140,30 +1242,7 @@ function renderProjectContractorActivityTab(contractor, activities) {
     p => Number(p.projectContractorId) === Number(contractor.id)
   );
 
-  const regularActivities = [...activities]
-    .filter(a => a.activityType !== "Estimate")
-    .map(activity => ({
-      kind: "activity",
-      id: activity.id,
-      activityAt: activity.activityAt,
-      type: activity.activityType || "Note",
-      summary: activity.summary || "Activity"
-    }));
-
-  const bidActivities = proposals.map(proposal => ({
-    kind: "bid",
-    id: proposal.id,
-    activityAt: `${proposal.receivedDate}T12:00:00`,
-    type: "Bid",
-    summary: [
-      "Bid received",
-      proposal.amount != null ? money.format(Number(proposal.amount)) : null,
-      proposal.revisionLabel || null
-    ].filter(Boolean).join(" · ")
-  }));
-
-  const rows = [...regularActivities, ...bidActivities]
-    .sort((a, b) => new Date(b.activityAt || 0) - new Date(a.activityAt || 0));
+  const rows = projectContractorActivityRows(contractor, activities, proposals);
 
   return `
     <div class="contractor-activity-heading">
