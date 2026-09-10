@@ -1004,7 +1004,7 @@ function renderProjectContractorDetails() {
 
 function isMirroredBidActivity(activity) {
   return String(activity?.activityType || "").toLowerCase() === "estimate" &&
-    /^proposal received\s*-/i.test(String(activity?.summary || ""));
+    /^proposal received(?:\s*-|$)/i.test(String(activity?.summary || ""));
 }
 
 function projectContractorActivityRows(contractor, activities, proposals) {
@@ -1198,6 +1198,10 @@ function renderProjectContractorProposalsTab(contractor, proposals, attachments)
             </div>
 
             <div class="bid-history-files">
+              <button type="button"
+                      class="secondary-button"
+                      data-edit-project-contractor-proposal="${proposal.id}"
+                      data-project-contractor-id="${contractor.id}">Edit bid</button>
               ${bidFiles.length
                 ? bidFiles.map(file => `
                     <button type="button"
@@ -1382,6 +1386,15 @@ async function handleProjectContractorDetailsClick(event) {
   const activityButton = event.target.closest("[data-add-project-contractor-activity]");
   if (activityButton) {
     openProjectContractorActivityEditor(Number(activityButton.dataset.addProjectContractorActivity));
+    return;
+  }
+
+  const editProposalButton = event.target.closest("[data-edit-project-contractor-proposal]");
+  if (editProposalButton) {
+    openProjectContractorProposalEditor(
+      Number(editProposalButton.dataset.projectContractorId),
+      Number(editProposalButton.dataset.editProjectContractorProposal)
+    );
     return;
   }
 
@@ -1618,6 +1631,7 @@ function ensureProjectContractorBidDetailDialog() {
       </div>
 
       <div class="modal-actions">
+        <button type="button" class="secondary-button" data-edit-bid-detail>Edit bid</button>
         <button type="button" class="primary-button" data-close-bid-detail>Close</button>
       </div>
     </div>`;
@@ -1626,6 +1640,16 @@ function ensureProjectContractorBidDetailDialog() {
   dialog.querySelectorAll("[data-close-bid-detail]").forEach(button =>
     button.addEventListener("click", () => dialog.close())
   );
+
+  dialog.querySelector("[data-edit-bid-detail]")?.addEventListener("click", () => {
+    const proposalId = Number(dialog.dataset.proposalId || 0);
+    const contractorId = Number(dialog.dataset.contractorId || 0);
+    if (!proposalId || !contractorId) return;
+
+    dialog.close();
+    openProjectContractorProposalEditor(contractorId, proposalId);
+  });
+
   return dialog;
 }
 
@@ -1642,6 +1666,8 @@ function openProjectContractorBidDetail(proposalId) {
   );
 
   const dialog = ensureProjectContractorBidDetailDialog();
+  dialog.dataset.proposalId = String(proposal.id);
+  dialog.dataset.contractorId = String(proposal.projectContractorId);
   dialog.querySelector("#bidDetailWhen").textContent = formatDateOnly(proposal.receivedDate);
   dialog.querySelector("#bidDetailAmount").textContent =
     proposal.amount != null ? money.format(Number(proposal.amount)) : "Amount not entered";
@@ -1808,6 +1834,7 @@ async function saveProjectContractorActivity(event) {
 }
 
 let activeProjectContractorProposalContractorId = null;
+let activeProjectContractorProposalId = null;
 
 
 function parseProposalCurrency(value) {
@@ -1837,7 +1864,7 @@ function ensureProjectContractorProposalDialog() {
     <form id="projectContractorProposalForm" class="modal-card" method="dialog"
           style="width:min(580px,calc(100vw - 32px));max-width:580px;padding:0;overflow:hidden">
       <div class="modal-header">
-        <div><div class="eyebrow">BID</div><h2 style="margin:.35rem 0 0">Add bid</h2></div>
+        <div><div class="eyebrow">BID</div><h2 id="projectContractorProposalDialogTitle" style="margin:.35rem 0 0">Add bid</h2></div>
         <button type="button" class="modal-close" data-close-project-contractor-proposal aria-label="Close">×</button>
       </div>
       <div class="modal-body" style="display:grid;gap:14px;padding:22px 26px">
@@ -1859,7 +1886,7 @@ function ensureProjectContractorProposalDialog() {
       </div>
       <div class="modal-actions">
         <button type="button" class="secondary-button" data-close-project-contractor-proposal>Cancel</button>
-        <button type="submit" class="primary-button">Save bid</button>
+        <button id="projectContractorProposalSaveButton" type="submit" class="primary-button">Save bid</button>
       </div>
     </form>`;
 
@@ -1880,19 +1907,57 @@ function ensureProjectContractorProposalDialog() {
   return dialog;
 }
 
-function openProjectContractorProposalEditor(contractorId) {
+function openProjectContractorProposalEditor(contractorId, proposalId = null) {
   activeProjectContractorProposalContractorId = Number(contractorId);
+  activeProjectContractorProposalId = proposalId == null ? null : Number(proposalId);
+
   const dialog = ensureProjectContractorProposalDialog();
-  dialog.querySelector("#projectContractorProposalDate").value = new Date().toISOString().slice(0, 10);
-  dialog.querySelector("#projectContractorProposalAmount").value = "";
-  dialog.querySelector("#projectContractorProposalRevision").value = "";
-  dialog.querySelector("#projectContractorProposalNotes").value = "";
+  const detail = document.querySelector("#projectDetailBody")?._projectDetail || {};
+  const proposal = activeProjectContractorProposalId
+    ? (detail.proposals || []).find(
+        p => Number(p.id) === Number(activeProjectContractorProposalId) &&
+             Number(p.projectContractorId) === Number(activeProjectContractorProposalContractorId))
+    : null;
+
+  const editing = Boolean(proposal);
+
+  dialog.querySelector("#projectContractorProposalDialogTitle").textContent =
+    editing ? "Edit bid" : "Add bid";
+  dialog.querySelector("#projectContractorProposalSaveButton").textContent =
+    editing ? "Save changes" : "Save bid";
+
+  dialog.querySelector("#projectContractorProposalDate").value =
+    editing ? (proposal.receivedDate || "") : new Date().toISOString().slice(0, 10);
+
+  dialog.querySelector("#projectContractorProposalAmount").value =
+    editing && proposal.amount != null
+      ? formatProposalCurrency(String(proposal.amount))
+      : "";
+
+  dialog.querySelector("#projectContractorProposalRevision").value =
+    editing ? (proposal.revisionLabel || "") : "";
+
+  dialog.querySelector("#projectContractorProposalNotes").value =
+    editing ? (proposal.notes || "") : "";
+
   dialog.querySelector("#projectContractorProposalFile").value = "";
-  dialog.querySelector("#projectContractorProposalCurrent").checked = true;
-  dialog.querySelector("#projectContractorProposalError").hidden = true;
+
+  dialog.querySelector("#projectContractorProposalCurrent").checked =
+    editing ? proposal.isCurrent === true : true;
+
+  const fileHint = dialog.querySelector("#projectContractorProposalFile")?.nextElementSibling;
+  if (fileHint) {
+    fileHint.textContent = editing
+      ? "Optional. Choose a file only if you want to add another attachment."
+      : "Optional. PDF or image, up to 20 MB.";
+  }
+
+  const error = dialog.querySelector("#projectContractorProposalError");
+  error.hidden = true;
+  error.textContent = "";
+
   dialog.showModal();
 }
-
 async function saveProjectContractorProposal(event) {
   event.preventDefault();
   const dialog = ensureProjectContractorProposalDialog();
@@ -1914,18 +1979,23 @@ async function saveProjectContractorProposal(event) {
   };
 
   try {
+    const editing = Number(activeProjectContractorProposalId || 0) > 0;
+    const proposalUrl = editing
+      ? `/api/home/projects/${activeProjectId}/contractors/${activeProjectContractorProposalContractorId}/proposals/${activeProjectContractorProposalId}`
+      : `/api/home/projects/${activeProjectId}/contractors/${activeProjectContractorProposalContractorId}/proposals`;
+
     const response = await fetch(
-      `/api/home/projects/${activeProjectId}/contractors/${activeProjectContractorProposalContractorId}/proposals`,
+      proposalUrl,
       {
-        method: "POST",
+        method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json", "Accept": "application/json" },
         body: JSON.stringify(payload)
       }
     );
     if (!response.ok) throw new Error(await readError(response));
 
-    const createdBid = await response.json();
-    const proposalId = Number(createdBid.id || 0);
+    const savedBid = await response.json();
+    const proposalId = Number(savedBid.id || activeProjectContractorProposalId || 0);
     const proposalFile = dialog.querySelector("#projectContractorProposalFile")?.files?.[0] || null;
 
     if (proposalFile && proposalId) {
@@ -1948,7 +2018,12 @@ async function saveProjectContractorProposal(event) {
     await loadProjectDetails(activeProjectId);
     activeProjectContractorDetailsTab = "proposals";
     refreshProjectContractorDetails();
-    showToast(proposalFile ? "Bid and file added." : "Bid added.");
+    activeProjectContractorProposalId = null;
+    showToast(
+      editing
+        ? (proposalFile ? "Bid updated and file added." : "Bid updated.")
+        : (proposalFile ? "Bid and file added." : "Bid added.")
+    );
   } catch (err) {
     console.error(err);
     error.textContent = err.message || "Could not save bid.";
