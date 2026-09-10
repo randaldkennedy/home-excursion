@@ -5,6 +5,7 @@ let activeHouseEditorId = null;
 let houseFilter = "all";
 let houseSort = "name";
 let houseWorkspaceBound = false;
+let homeAccessBound = false;
 
 function selectedPropertyId() {
   const value = Number(localStorage.getItem(PROPERTY_STORAGE_KEY) || 0);
@@ -181,7 +182,8 @@ function showWorkspaceView(view) {
     houses: document.querySelector("#housesWorkspaceView"),
     projects: document.querySelector("#projectsWorkspaceView"),
     tasks: document.querySelector("#tasksWorkspaceView"),
-    expenses: document.querySelector("#expensesWorkspaceView")
+    expenses: document.querySelector("#expensesWorkspaceView"),
+    access: document.querySelector("#accessWorkspaceView")
   };
 
   Object.entries(views).forEach(([key, element]) => {
@@ -191,6 +193,11 @@ function showWorkspaceView(view) {
   document.querySelectorAll("[data-workspace-view]").forEach(button => {
     button.classList.toggle("active", button.dataset.workspaceView === view);
   });
+
+  if (view === "access") {
+    bindHomeAccessWorkspace();
+    loadHomeAccessMembers();
+  }
 }
 
 async function loadProperties() {
@@ -575,4 +582,152 @@ async function uploadHousePhoto(event) {
   } finally {
     event.target.value = "";
   }
+}
+
+
+/* ============================================================
+   Household access
+   ============================================================ */
+
+function bindHomeAccessWorkspace() {
+  if (homeAccessBound) return;
+  homeAccessBound = true;
+
+  document.querySelector("#homeAccessForm")?.addEventListener("submit", addHomeAccessMember);
+  document.querySelector("#homeAccessMembers")?.addEventListener("click", async event => {
+    const button = event.target.closest("[data-remove-home-member]");
+    if (!button) return;
+
+    const userId = Number(button.dataset.removeHomeMember || 0);
+    const email = button.dataset.memberEmail || "this account";
+    if (!userId) return;
+
+    if (!confirm(`Remove Home access for ${email}?`)) return;
+
+    button.disabled = true;
+    try {
+      const response = await fetch(`/api/home/access/members/${userId}`, {
+        method: "DELETE",
+        headers: { "Accept": "application/json" }
+      });
+
+      if (!response.ok)
+        throw new Error(await readError(response));
+
+      showHomeAccessMessage(`Removed Home access for ${email}.`, false);
+      await loadHomeAccessMembers();
+    } catch (error) {
+      console.error(error);
+      showHomeAccessMessage(error.message || "Couldn't remove Home access.", true);
+      button.disabled = false;
+    }
+  });
+}
+
+async function loadHomeAccessMembers() {
+  const container = document.querySelector("#homeAccessMembers");
+  if (!container) return;
+
+  container.innerHTML = `<div class="loading">Loading household members…</div>`;
+
+  try {
+    const response = await fetch("/api/home/access", {
+      headers: { "Accept": "application/json" }
+    });
+
+    if (!response.ok)
+      throw new Error(await readError(response));
+
+    const data = await response.json();
+    const members = Array.isArray(data.members) ? data.members : [];
+
+    if (!members.length) {
+      container.innerHTML = `<div class="empty">No household members found.</div>`;
+      return;
+    }
+
+    container.innerHTML = members.map(member => {
+      const displayName = member.givenName || member.email || "Household member";
+      const isYou = member.isCurrentUser === true;
+
+      return `<article class="access-member-row">
+        <div class="access-member-avatar">${escapeHtml((displayName || "?").trim().charAt(0).toUpperCase() || "?")}</div>
+        <div class="access-member-copy">
+          <div class="access-member-title">
+            <strong>${escapeHtml(displayName)}</strong>
+            ${isYou ? `<span class="house-primary-pill">You</span>` : ""}
+          </div>
+          <span>${escapeHtml(member.email || "")}</span>
+        </div>
+        <div class="access-member-role">${escapeHtml(member.role || "Member")}</div>
+        <div class="access-member-action">
+          ${isYou
+            ? `<span class="access-owner-note">Protected</span>`
+            : `<button type="button"
+                       class="secondary-btn"
+                       data-remove-home-member="${member.userId}"
+                       data-member-email="${escapeAttribute(member.email || "")}">
+                 Remove access
+               </button>`}
+        </div>
+      </article>`;
+    }).join("");
+  } catch (error) {
+    console.error(error);
+    container.innerHTML = `<div class="empty">Could not load household access.</div>`;
+    showHomeAccessMessage(error.message || "Couldn't load household access.", true);
+  }
+}
+
+async function addHomeAccessMember(event) {
+  event.preventDefault();
+
+  const form = event.currentTarget;
+  const emailInput = form.querySelector("#homeAccessEmail");
+  const button = form.querySelector('button[type="submit"]');
+  const email = (emailInput?.value || "").trim();
+
+  if (!email) return;
+
+  button.disabled = true;
+  showHomeAccessMessage("", false, true);
+
+  try {
+    const response = await fetch("/api/home/access/members", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({ email })
+    });
+
+    if (!response.ok)
+      throw new Error(await readError(response));
+
+    emailInput.value = "";
+    showHomeAccessMessage(`${email} now has Home access.`, false);
+    await loadHomeAccessMembers();
+  } catch (error) {
+    console.error(error);
+    showHomeAccessMessage(error.message || "Couldn't add household member.", true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function showHomeAccessMessage(message, isError = false, hide = false) {
+  const node = document.querySelector("#homeAccessMessage");
+  if (!node) return;
+
+  if (hide || !message) {
+    node.hidden = true;
+    node.textContent = "";
+    node.classList.remove("error");
+    return;
+  }
+
+  node.hidden = false;
+  node.textContent = message;
+  node.classList.toggle("error", isError);
 }

@@ -60,6 +60,7 @@
       </nav>
 
       <div class="workspace-sidebar-bottom">
+        <button class="workspace-nav-item" type="button" data-workspace-view="access"><span>🔐</span>Household Access</button>
         <button class="workspace-nav-item" type="button" data-workspace-view="houses"><span>⚙</span>Property Settings</button>
         <div class="workspace-sidebar-motto">
           <strong>Home Excursion</strong>
@@ -113,6 +114,49 @@
               <p>Choose a property on the left, or add Mom's house so we can get that siding project moving.</p>
             </div>
           </article>
+        </section>
+      </section>
+
+      <section id="accessWorkspaceView" class="workspace-page-view" hidden>
+        <header class="workspace-page-header">
+          <div>
+            <span class="section-kicker">PRIVATE ACCESS</span>
+            <h1>Household Access</h1>
+            <p>If you’re on this list, you’re in. Home Excursion stays private.</p>
+          </div>
+        </header>
+
+        <section class="workspace-page-card access-workspace-card">
+          <div class="access-invite-panel">
+            <div>
+              <h2>Add household member</h2>
+              <p>They must have signed into La Última Excursión at least once so their account exists.</p>
+            </div>
+            <form id="homeAccessForm" class="access-invite-form">
+              <label class="field">
+                <span>Email address</span>
+                <input id="homeAccessEmail"
+                       type="email"
+                       autocomplete="email"
+                       placeholder="name@example.com"
+                       required>
+              </label>
+              <button class="primary-btn" type="submit">Give Home access</button>
+            </form>
+            <div id="homeAccessMessage" class="access-message" hidden></div>
+          </div>
+
+          <div class="access-members-panel">
+            <div class="house-section-heading">
+              <div>
+                <span class="section-kicker">MEMBERS</span>
+                <h3>Who can use Home</h3>
+              </div>
+            </div>
+            <div id="homeAccessMembers" class="access-members-list">
+              <div class="loading">Loading household members…</div>
+            </div>
+          </div>
         </section>
       </section>
 

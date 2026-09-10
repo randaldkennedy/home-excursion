@@ -46,6 +46,11 @@ public static class HomeEndpoints
 
         group.MapGet("/dashboard", GetDashboardAsync);
 
+        group.MapGet("/access", GetHomeAccessMembersAsync);
+        group.MapPost("/access/members", AddHomeAccessMemberAsync);
+        group.MapDelete("/access/members/{userId:int}", RemoveHomeAccessMemberAsync);
+
+
         group.MapGet("/properties", GetPropertiesAsync);
         group.MapPost("/properties", CreatePropertyAsync);
         group.MapPut("/properties/{id:int}", UpdatePropertyAsync);
@@ -98,6 +103,141 @@ public static class HomeEndpoints
         group.MapDelete("/tasks/{id:int}", DeleteTaskAsync);
 
         return app;
+    }
+
+    private sealed record AddHomeAccessMemberRequest(string Email);
+
+    private static async Task<IResult> GetHomeAccessMembersAsync(
+        HttpContext httpContext,
+        LaUltimaExcursionDbContext platformDb,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetHomeHouseholdId(httpContext, out var householdId))
+            return Results.Forbid();
+
+        var currentUserId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!currentUserId.HasValue)
+            return Results.Unauthorized();
+
+        var members = await platformDb.HouseholdMembers
+            .AsNoTracking()
+            .Where(hm => hm.HouseholdId == householdId)
+            .OrderBy(hm => hm.User.Email)
+            .Select(hm => new
+            {
+                userId = hm.UserId,
+                email = hm.User.Email,
+                givenName = hm.User.GivenName,
+                role = hm.Role,
+                joinedUtc = hm.JoinedUtc,
+                isCurrentUser = hm.UserId == currentUserId.Value
+            })
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(new
+        {
+            householdId,
+            currentUserId = currentUserId.Value,
+            members
+        });
+    }
+
+    private static async Task<IResult> AddHomeAccessMemberAsync(
+        AddHomeAccessMemberRequest request,
+        HttpContext httpContext,
+        LaUltimaExcursionDbContext platformDb,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetHomeHouseholdId(httpContext, out var householdId))
+            return Results.Forbid();
+
+        var email = request.Email?.Trim();
+        if (string.IsNullOrWhiteSpace(email))
+            return Results.BadRequest(new { message = "Enter an email address." });
+
+        var normalizedEmail = email.ToLower();
+
+        var user = await platformDb.Users
+            .FirstOrDefaultAsync(
+                u => u.Email != null && u.Email.ToLower() == normalizedEmail,
+                cancellationToken);
+
+        if (user is null)
+        {
+            return Results.NotFound(new
+            {
+                message = "That account has not signed into La Última Excursión yet. Have them sign in once, then add them here."
+            });
+        }
+
+        var exists = await platformDb.HouseholdMembers
+            .AnyAsync(
+                hm => hm.HouseholdId == householdId && hm.UserId == user.Id,
+                cancellationToken);
+
+        if (exists)
+            return Results.BadRequest(new { message = "That account already has Home access." });
+
+        platformDb.HouseholdMembers.Add(new HouseholdMember
+        {
+            HouseholdId = householdId,
+            UserId = user.Id,
+            Role = "Member"
+        });
+
+        await platformDb.SaveChangesAsync(cancellationToken);
+
+        return Results.Ok(new
+        {
+            userId = user.Id,
+            email = user.Email,
+            givenName = user.GivenName,
+            role = "Member"
+        });
+    }
+
+    private static async Task<IResult> RemoveHomeAccessMemberAsync(
+        int userId,
+        HttpContext httpContext,
+        LaUltimaExcursionDbContext platformDb,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetHomeHouseholdId(httpContext, out var householdId))
+            return Results.Forbid();
+
+        var currentUserId = await GetCurrentUserIdAsync(httpContext, platformDb, cancellationToken);
+        if (!currentUserId.HasValue)
+            return Results.Unauthorized();
+
+        if (userId == currentUserId.Value)
+            return Results.BadRequest(new { message = "You cannot remove your own Home access." });
+
+        var membership = await platformDb.HouseholdMembers
+            .FirstOrDefaultAsync(
+                hm => hm.HouseholdId == householdId && hm.UserId == userId,
+                cancellationToken);
+
+        if (membership is null)
+            return Results.NotFound(new { message = "That Home member was not found." });
+
+        platformDb.HouseholdMembers.Remove(membership);
+        await platformDb.SaveChangesAsync(cancellationToken);
+
+        return Results.NoContent();
+    }
+
+    private static bool TryGetHomeHouseholdId(HttpContext httpContext, out int householdId)
+    {
+        if (httpContext.Items.TryGetValue(HomeHouseholdIdItemKey, out var value) &&
+            value is int id &&
+            id > 0)
+        {
+            householdId = id;
+            return true;
+        }
+
+        householdId = 0;
+        return false;
     }
 
     private static async Task<IResult> GetDashboardAsync(
