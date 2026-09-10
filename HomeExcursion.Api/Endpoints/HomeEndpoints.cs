@@ -12,6 +12,38 @@ public static class HomeEndpoints
         var group = app.MapGroup("/api/home")
             .RequireAuthorization();
 
+        // Home Excursion is private household data. Signing into another
+        // La Ultima Excursion app does NOT grant access to Home.
+        // Every /api/home endpoint must belong to the household that owns
+        // the Home properties, and the signed-in user must be an explicit
+        // HouseholdMember of that household.
+        group.AddEndpointFilter(async (context, next) =>
+        {
+            var httpContext = context.HttpContext;
+            var homeDb = httpContext.RequestServices.GetRequiredService<HomeExcursionDbContext>();
+            var platformDb = httpContext.RequestServices.GetRequiredService<LaUltimaExcursionDbContext>();
+
+            var access = await GetHomeAccessAsync(
+                httpContext,
+                homeDb,
+                platformDb,
+                httpContext.RequestAborted);
+
+            if (!access.IsAuthenticated)
+                return Results.Unauthorized();
+
+            if (!access.IsAuthorized)
+                return Results.Json(
+                    new
+                    {
+                        message = "This account does not have access to Home Excursion. Access is invitation-only."
+                    },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            httpContext.Items[HomeHouseholdIdItemKey] = access.HouseholdId!.Value;
+            return await next(context);
+        });
+
         group.MapGet("/dashboard", GetDashboardAsync);
 
         group.MapGet("/properties", GetPropertiesAsync);
@@ -2687,6 +2719,52 @@ public static class HomeEndpoints
         }
 
         return result;
+    }
+
+    private const string HomeHouseholdIdItemKey = "HomeExcursion.HouseholdId";
+
+    private sealed record HomeAccessResult(
+        bool IsAuthenticated,
+        bool IsAuthorized,
+        int? HouseholdId);
+
+    private static async Task<HomeAccessResult> GetHomeAccessAsync(
+        HttpContext httpContext,
+        HomeExcursionDbContext homeDb,
+        LaUltimaExcursionDbContext platformDb,
+        CancellationToken cancellationToken)
+    {
+        var userId = await GetCurrentUserIdAsync(
+            httpContext,
+            platformDb,
+            cancellationToken);
+
+        if (!userId.HasValue)
+            return new HomeAccessResult(false, false, null);
+
+        // Home currently represents one private household with multiple
+        // properties. Use the household already attached to the Home data
+        // rather than granting access based on membership in any household.
+        var homeHouseholdId = await homeDb.Properties
+            .AsNoTracking()
+            .OrderBy(p => p.Id)
+            .Select(p => (int?)p.HouseholdId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (!homeHouseholdId.HasValue)
+            return new HomeAccessResult(true, false, null);
+
+        var isMember = await platformDb.HouseholdMembers
+            .AsNoTracking()
+            .AnyAsync(
+                hm => hm.UserId == userId.Value &&
+                      hm.HouseholdId == homeHouseholdId.Value,
+                cancellationToken);
+
+        return new HomeAccessResult(
+            true,
+            isMember,
+            homeHouseholdId);
     }
 
     private const string EntraObjectIdClaim =
