@@ -731,9 +731,18 @@ function renderProjectContractors(contractors, attachments) {
   const proposals = detail.proposals || [];
 
   const selected = contractors.filter(c => c.isSelected);
-  const bidders = selected.length && !showHistoricalProjectBidders
+  const bidderSource = selected.length && !showHistoricalProjectBidders
     ? selected
     : contractors;
+
+  // Keep contractors we're still considering at the top.
+  // Declined / No Response stay visible for history, but fall to the bottom.
+  const bidders = [...bidderSource].sort((a, b) => {
+    const bottomStatuses = new Set(["declined", "no response"]);
+    const aBottom = bottomStatuses.has(String(a.status || "").trim().toLowerCase()) ? 1 : 0;
+    const bBottom = bottomStatuses.has(String(b.status || "").trim().toLowerCase()) ? 1 : 0;
+    return aBottom - bBottom;
+  });
 
   const hiddenHistoryCount = selected.length
     ? Math.max(0, contractors.length - selected.length)
